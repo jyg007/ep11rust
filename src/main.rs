@@ -7,14 +7,19 @@ use ep11::Attribute;
 use ep11::generate_key_pair; 
 use ep11::generate_key; 
 use ep11::generate_random; 
+use ep11::derive_key; 
 use ep11::sign_single;
 use ep11::encrypt_single;
 use ep11::decrypt_single;
 use ep11::encode_oid;
+use ep11::new_btc_derive_params;
+use ep11::BTCDeriveParams;
 use crate::ep11::Ep11; 
 use crate::constants::*; 
 use libloading::Library;
 use sha2::{Sha256, Digest};
+use std::env;
+
 // Assuming the necessary imports and structs are defined in the same file 
  
 fn main() { 
@@ -182,5 +187,70 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
         }
     };
     println!("random (hex) = {}", hex::encode(&iv));
+
+
+
+
+// ASN.1 OID for secp256k1
+let ec_parameters = encode_oid("1.3.132.0.10");
+
+// DeriveKey attributes (equivalent to Go map)
+let derive_key_template = vec![
+    Attribute::new(CKA_EC_PARAMS, ec_parameters.clone()),
+    Attribute::new(CKA_VERIFY, true),
+    Attribute::new(CKA_DERIVE, true),
+    Attribute::new(CKA_PRIVATE, true),
+    Attribute::new(CKA_SENSITIVE, true),
+    Attribute::new(CKA_IBM_USE_AS_DATA, true),
+    Attribute::new(CKA_KEY_TYPE, CKK_ECDSA),
+    Attribute::new(CKA_VALUE_LEN, 0u64),
+];
+
+let btc_params = BTCDeriveParams {
+    derive_type: CK_IBM_SLIP0010_MASTERK,
+    child_key_index: 0,
+    chain_code: Vec::new(),
+    version: XCP_BTC_VERSION,
+};
+
+let btc_params = new_btc_derive_params(&btc_params);
+
+// Prepare mechanism
+let mech = Mechanism {
+    mechanism: CKM_IBM_BTC_DERIVE,
+    parameter: Some(btc_params),
+};
+
+let seed_hex = env::var("MASTERSEED")
+    .expect("MASTERSEED environment variable not set");
+
+let seed = hex::decode(&seed_hex)
+    .expect("MASTERSEED is not valid hex");
+// baseKey is your parent keyblob
+let base_key_bytes: Option<&[u8]> = if seed.is_empty() {
+    None
+} else {
+    Some(&seed)
+};
+
+match base_key_bytes {
+    Some(bytes) => {
+        println!("base_key_bytes = {}", hex::encode(bytes));
+    }
+    None => {
+        println!("base_key_bytes = <none>");
+    }
+}
+
+// ---- Call Rust DeriveKey ----
+let (new_key_bytes, checksum) =
+    match derive_key(&lib, target, &mech, base_key_bytes, derive_key_template) {
+        Ok((k, c)) => (k, c),
+        Err(e) => panic!("Derived Child Key request error: {}", e),
+    };
+
+println!("Derived Key  = {}", hex::encode(&new_key_bytes));
+println!("Checksum     = {}", hex::encode(&checksum));
+
 } 
  

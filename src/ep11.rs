@@ -804,6 +804,145 @@ pub fn hsm_init(input: &str, single: bool, lib: &Library) -> Result<u64, String>
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct BTCDeriveParams {
+    pub derive_type: u64,
+    pub child_key_index: u64,
+    pub chain_code: Vec<u8>,
+    pub version: u64,
+}
+
+#[repr(C)]
+pub struct CK_IBM_BTC_DERIVE_PARAMS {
+    pub _type: u64,
+    pub childKeyIndex: u64,
+    pub pChainCode: *const u8,
+    pub ulChainCodeLen: u64,
+    pub version: u64,
+}
+pub fn new_btc_derive_params(p: &BTCDeriveParams) -> Vec<u8> {
+    let (ptr, len) = if p.chain_code.is_empty() {
+        (std::ptr::null(), 0u64)
+    } else {
+        (p.chain_code.as_ptr(), p.chain_code.len() as u64)
+    };
+
+    let params = CK_IBM_BTC_DERIVE_PARAMS {
+        _type: p.derive_type,
+        childKeyIndex: p.child_key_index,
+        pChainCode: ptr,
+        ulChainCodeLen: len,
+        version: p.version,
+    };
+
+    // SAFETY: the struct is POD, we can copy it as bytes
+    let size = std::mem::size_of::<CK_IBM_BTC_DERIVE_PARAMS>();
+    let mut out = vec![0u8; size];
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            &params as *const _ as *const u8,
+            out.as_mut_ptr(),
+            size,
+        );
+    }
+
+    out
+}
+
+
+pub fn derive_key( lib: &Library, target: u64, mechanism: &Mechanism, base_key: Option<&[u8]>, attrs: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
+    unsafe {
+        // Load symbol
+        let m_derive_key: Symbol<
+            unsafe extern "C" fn(
+                mech: *mut CK_MECHANISM,
+                attrs: *mut CK_ATTRIBUTE,
+                attr_count: u64,
+                base_key: *mut u8,
+                base_key_len: u64,
+                data: *mut u8,
+                data_len: u64,
+                login_blob: *mut u8,
+                login_blob_len: u64,
+                new_key: *mut u8,
+                new_key_len: *mut u64,
+                csum: *mut u8,
+                csum_len: *mut u64,
+                target: u64,
+            ) -> u64,
+        > = lib.get(b"m_DeriveKey").map_err(|e| e.to_string())?;
+
+    let mut arena = Arena::new();
+
+    // ---- Build CK_MECHANISM ----
+    let mut mech_struct = CK_MECHANISM {
+        mechanism: mechanism.mechanism,
+        pParameter: std::ptr::null_mut(),
+        ulParameterLen: 0,
+    };
+
+    // Convert attributes
+    let mut k_attr = AttributeContext::new(attrs);
+    
+    if let Some(param) = &mechanism.parameter {
+        let buf_ptr = arena.allocate(param);
+        mech_struct.pParameter = buf_ptr.ptr ;
+        mech_struct.ulParameterLen = param.len() as u64;
+    }
+
+        // Base key pointer
+        let (base_key_ptr, base_key_len) = match base_key {
+            Some(bk) if !bk.is_empty() => (bk.as_ptr() as *mut u8, bk.len() as u64),
+            _ => (std::ptr::null_mut(), 0),
+        };
+
+        // Output buffers
+        const MAX_BLOB_SIZE: usize = 4096;
+        let mut new_key = vec![0u8; MAX_BLOB_SIZE];
+        let mut csum = vec![0u8; MAX_BLOB_SIZE];
+
+        let mut new_key_len = new_key.len() as u64;
+        let mut csum_len = csum.len() as u64;
+
+        // Empty data buffer (as in Go)
+        let data_ptr = std::ptr::null_mut();
+        let data_len = 0u64;
+
+        // Login blob
+        let login_ptr = get_login_blob_ptr();
+        let login_len = get_login_blob_len();
+
+        // Call m_DeriveKey
+        let rv = m_derive_key(
+            &mut mech_struct,
+            k_attr.as_mut_ptr() as *mut CK_ATTRIBUTE,
+            k_attr.len() as u64,
+            base_key_ptr,
+            base_key_len,
+            data_ptr,
+            data_len,
+            login_ptr,
+            login_len,
+            new_key.as_mut_ptr(),
+            &mut new_key_len,
+            csum.as_mut_ptr(),
+            &mut csum_len,
+            target,
+        );
+
+        if rv != CKR_OK {
+            return Err(format!("m_DeriveKey failed: {:#X}", rv));
+        }
+
+        new_key.truncate(new_key_len as usize);
+        csum.truncate(csum_len as usize);
+
+        Ok((new_key, csum))
+    }
+}
+
 pub fn encode_oid(oid_str: &str) -> Vec<u8> {
     // Split OID string into numbers
     let numbers: Vec<u32> = oid_str
