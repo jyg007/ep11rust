@@ -11,6 +11,7 @@ use ep11::derive_key;
 use ep11::sign_single;
 use ep11::encrypt_single;
 use ep11::decrypt_single;
+use ep11::unwrap_key;
 use ep11::encode_oid;
 use ep11::new_btc_derive_params;
 use ep11::BTCDeriveParams;
@@ -31,6 +32,10 @@ fn main() {
    // Call the HsmInit function (from previous code) 
     let target = unsafe { hsm_init("03.19", false, &lib) }.expect("HSM initialization failed"); 
  
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
    // Prepare EC parameters (OIDNamedCurveSecp256k1) 
     let ec_parameters = encode_oid("1.3.132.0.10"); 
 //    println!("{:?}", ec_parameters); 
@@ -83,6 +88,10 @@ let (pk,sk) = match result {
    } 
 }; 
 
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
    let mech = Mechanism { 
        mechanism: CKM_AES_KEY_GEN, 
        parameter: None, 
@@ -115,6 +124,10 @@ let (pk,sk) = match result {
        return;
    } 
 }; 
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
 
     let mut hasher = Sha256::new();
     hasher.update(b"This data needs to be signed");
@@ -138,6 +151,10 @@ let (pk,sk) = match result {
     
     //let iv = vec![0u8; 16];
 
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
     let iv = match generate_random(&lib, target, 16) {
         Ok(iv) => iv,
         Err(e) => {
@@ -164,6 +181,10 @@ let (pk,sk) = match result {
 
     println!("cipher (hex) = {}", hex::encode(&encrypted_with_iv)); 
 
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
     let iv2 = &encrypted_with_iv[..16];
     let ciphertext2 = &encrypted_with_iv[16..];
 
@@ -188,8 +209,79 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
     };
     println!("random (hex) = {}", hex::encode(&iv));
 
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+   let mech = Mechanism { 
+       mechanism: CKM_AES_KEY_GEN, 
+       parameter: None, 
+   }; 
 
+   let key_template = vec![ 
+       Attribute::new(CKA_VALUE_LEN,32),
+       Attribute::new(CKA_UNWRAP,true),
+       Attribute::new(CKA_WRAP,true),
+       Attribute::new(CKA_ENCRYPT,true),
+       Attribute::new(CKA_DECRYPT,true),
+   ];
+   let result2 = unsafe { 
+       generate_key(&lib, 
+           target, 
+           &mech, 
+           key_template, 
+       ) 
+   }; 
+   let (k, csum) = match result2 {
+        Ok((k, csum)) => (k, csum),
+        Err(error) => {
+            eprintln!("Error: {}", error);
+            return; // This is valid because main() returns ()
+        }
+    };
 
+    let iv = vec![0u8; 16];
+
+    let mechanism = Mechanism {
+        mechanism: CKM_AES_CBC_PAD,
+        parameter: Some(iv.clone()), // pass IV as parameter
+    };
+    let seed_hex = "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542";
+    let seed = hex::decode(seed_hex).expect("Invalid hex string");
+
+    let cipher = match encrypt_single(&lib, target, &mechanism, k.clone(), &seed) {
+        Ok(cip) => cip,
+        Err(e) => {
+            eprintln!("Encrypt error: {}", e);
+            return; // or handle the error appropriately
+        }
+    };
+   
+   let key_template4 = vec![ 
+       Attribute::new(CKA_UNWRAP,false),
+       Attribute::new(CKA_WRAP,false),
+       Attribute::new(CKA_SIGN,true),
+       Attribute::new(CKA_VERIFY,true),
+       Attribute::new(CKA_DERIVE,true),
+       Attribute::new(CKA_IBM_USE_AS_DATA,true),
+       Attribute::new(CKA_VALUE_LEN,seed.len() as u64),
+       Attribute::new(CKA_CLASS,CKO_SECRET_KEY),
+       Attribute::new(CKA_KEY_TYPE,CKK_GENERIC_SECRET),
+   ];
+   println!("hello");
+    let (seedblob, csum) = match unwrap_key(&lib, target, &Mechanism { mechanism: CKM_AES_CBC_PAD, parameter: Some(iv.clone()) }, k,cipher ,key_template4) {
+    Ok((uk, cs)) => (uk, cs),
+    Err(e) => {
+        eprintln!("Unwrap error: {}", e);
+        return;
+    }
+   };
+  
+
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
+//************************************************************************************************
 
 // ASN.1 OID for secp256k1
 let ec_parameters = encode_oid("1.3.132.0.10");
@@ -220,17 +312,18 @@ let mech = Mechanism {
     mechanism: CKM_IBM_BTC_DERIVE,
     parameter: Some(btc_params),
 };
-
-let seed_hex = env::var("MASTERSEED")
+/*
+let seedblob_hex = env::var("MASTERSEED")
     .expect("MASTERSEED environment variable not set");
 
-let seed = hex::decode(&seed_hex)
-    .expect("MASTERSEED is not valid hex");
+let seedblob = hex::decode(&seedblob_hex)
+    .expect("MASTERSEED is not valid hex");*/
+
 // baseKey is your parent keyblob
-let base_key_bytes: Option<&[u8]> = if seed.is_empty() {
+let base_key_bytes: Option<&[u8]> = if seedblob.is_empty() {
     None
 } else {
-    Some(&seed)
+    Some(&seedblob)
 };
 
 match base_key_bytes {

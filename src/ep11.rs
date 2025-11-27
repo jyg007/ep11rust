@@ -11,6 +11,7 @@ use std::slice;
 use std::mem;
 
 
+pub const MAX_BLOB_SIZE: usize = 9000;
 
 pub const XCP_OK: u32 = 0;
 pub const CKR_OK: u64 = 0;
@@ -96,15 +97,12 @@ pub fn xcptgtmask_set_dom(mask: &mut [u8; 32], domain: usize) {
 pub type Ep11MInit = unsafe extern "C" fn() -> c_int;
 pub type Ep11AddModule = unsafe extern "C" fn(*mut XCP_Module, *mut u64) -> u32;
 
-
-
 static LOGIN_BLOB: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static LOGIN_BLOB_LEN: Mutex<u64> = Mutex::new(0);
 
 // Constants for OIDs
 const OIDNAMEDCURVESECP256K1: &str = "1.3.132.0.10";
 const OIDNAMEDCURVEED25519: &str = "1.3.101.112";
-
 
 // SetLoginBlob function to set global blob and its length
 pub fn set_login_blob(id_bytes: &[u8]) {
@@ -128,7 +126,6 @@ pub fn get_login_blob_len() -> u64 {
     let login_blob_len = LOGIN_BLOB_LEN.lock().unwrap();
     *login_blob_len // Return the length of the login blob
 }
-
 
 // Helper function to convert error codes to strings
 fn to_error(code: u64) -> String {
@@ -344,7 +341,7 @@ impl AttributeContext {
     pub fn print_ck_attributes(&self) {
 let ck_attributes = self.as_ck_attributes();
 for attr in ck_attributes {
-println!("Type: {}", attr.type_);
+println!("Type: {:X}", attr.type_);
 println!("Length: {}", attr.ulValueLen);
 let value_bytes = unsafe { std::slice::from_raw_parts(attr.pValue as *const u8, attr.ulValueLen as usize) };
 println!("Value: {:?}", value_bytes);
@@ -429,6 +426,84 @@ pub fn generate_key_pair(lib: &Library,target: u64, mechanism: &Mechanism, pk_at
 
     Ok((pk_key, sk_key))
 }
+
+pub fn unwrap_key(
+    lib: &Library,
+    target: u64,
+    mechanism: &Mechanism,
+    kek: Vec<u8>,
+    wrapped_key: Vec<u8>,
+    template: Vec<Attribute>,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let mut attr_arena = Arena::new();
+    let mut t_ctx = AttributeContext::new(template);
+    let mut mech_struct = CK_MECHANISM {
+        mechanism: mechanism.mechanism,
+        pParameter: ptr::null_mut(),
+        ulParameterLen: 0,
+    };
+
+    if let Some(param) = &mechanism.parameter {
+        let buf_ptr = attr_arena.allocate(param);
+        mech_struct.pParameter = buf_ptr.ptr;
+        mech_struct.ulParameterLen = param.len() as u64;
+    }
+
+    // Buffers for unwrapped key and checksum
+    let mut unwrapped_key = vec![0u8; MAX_BLOB_SIZE];
+    let mut csum = vec![0u8; MAX_BLOB_SIZE];
+    let mut unwrapped_len = unwrapped_key.len() as u64;
+    let mut csum_len = csum.len() as u64;
+
+    let mac_key_ptr: *mut u8 = ptr::null_mut();
+    let mac_key_len: u64 = 0;
+
+    //t_ctx.print_ck_attributes();
+    let rv = unsafe {
+        let m_unwrap_key: Symbol<
+            unsafe extern "C" fn(
+                *mut u8, u64,      // wrapped key
+                *mut u8, u64,      // KEK
+                *mut u8, u64,      // MAC key
+                *mut u8, u64,      // Login blob
+                *mut CK_MECHANISM, // mechanism
+                *mut CK_ATTRIBUTE, u64, // template
+                *mut u8, *mut u64, // unwrapped key
+                *mut u8, *mut u64, // checksum
+                u64,               // target
+            ) -> u64,
+        > = lib.get(b"m_UnwrapKey\0").map_err(|e| e.to_string())?;
+
+        m_unwrap_key(
+            wrapped_key.as_ptr() as *mut u8,
+            wrapped_key.len() as u64,
+            kek.as_ptr() as *mut u8,
+            kek.len() as u64,
+            mac_key_ptr,
+            mac_key_len,
+            get_login_blob_ptr(),
+            get_login_blob_len(),
+            &mut mech_struct,
+            t_ctx.as_mut_ptr() as *mut CK_ATTRIBUTE,
+            t_ctx.len() as u64,
+            unwrapped_key.as_mut_ptr(),
+            &mut unwrapped_len,
+            csum.as_mut_ptr(),
+            &mut csum_len,
+            target,
+        )
+    };
+
+    if rv != CKR_OK {
+        return Err(to_error(rv));
+    }
+
+    unwrapped_key.truncate(unwrapped_len as usize);
+    csum.truncate(csum_len as usize);
+
+    Ok((unwrapped_key, csum))
+}
+
 pub fn decrypt_single(
     lib: &Library,
     target: u64,
