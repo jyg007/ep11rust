@@ -786,6 +786,19 @@ pub fn hsm_init(input: &str, single: bool, lib: &Library) -> Result<u64, String>
                 return Err(format!("Error from m_add_module: {:#X}", rc));
             }
         }
+        // Handle EP11LOGIN env variable
+        if let Ok(hex_string) = std::env::var("EP11LOGIN") {
+            if !hex_string.is_empty() {
+                match hex::decode(&hex_string) {
+                    Ok(blob) => {
+                        // Call your set_login_blob function
+                        set_login_blob(&blob);
+                        println!("Login blob set from environment variable.");
+                    }
+                    Err(e) => eprintln!("Failed to decode EP11LOGIN: {}", e),
+                }
+            }
+        }
 
         Ok(target)
     }
