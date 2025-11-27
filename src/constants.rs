@@ -1,0 +1,69 @@
+// PKCS#11 CKA_ attribute constants
+pub type CK_ATTRIBUTE_TYPE = CK_ULONG;
+//
+pub const CKA_CLASS: u64 = 0x00000000;
+pub const CKA_TOKEN: u64 = 0x00000001;
+pub const CKA_PRIVATE: u64 = 0x00000002;
+pub const CKA_LABEL: u64 = 0x00000003;
+pub const CKA_APPLICATION: u64 = 0x00000010;
+pub const CKA_VALUE: u64 = 0x00000011;
+pub const CKA_OBJECT_ID: u64 = 0x00000012;
+pub const CKA_CERTIFICATE_TYPE: u64 = 0x00000080;
+pub const CKA_ISSUER: u64 = 0x00000081;
+pub const CKA_SERIAL_NUMBER: u64 = 0x00000082;
+pub const CKA_AC_ISSUER: u64 = 0x00000083;
+pub const CKA_OWNER: u64 = 0x00000084;
+pub const CKA_ATTR_TYPES: u64 = 0x00000085;
+pub const CKA_TRUSTED: u64 = 0x00000086;
+pub const CKA_KEY_TYPE: u64 = 0x00000100;
+pub const CKA_ID: u64 = 0x00000102;
+pub const CKA_SENSITIVE: u64 = 0x00000103;
+pub const CKA_ENCRYPT: u64 = 0x00000104;
+pub const CKA_DECRYPT: u64 = 0x00000105;
+pub const CKA_WRAP: u64 = 0x00000106;
+pub const CKA_UNWRAP: u64 = 0x00000107;
+pub const CKA_SIGN: u64 = 0x00000108;
+pub const CKA_VERIFY: u64 = 0x0000010A;
+pub const CKA_DERIVE: u64 = 0x0000010C;
+pub const CKA_EC_PARAMS: u64 = 0x00000180;
+pub const CKA_EC_POINT: u64 = 0x00000181;
+pub const CKA_VALUE_LEN: u64   =      0x00000161;
+pub const CKA_EXTRACTABLE: u64 =        0x00000162;
+pub const CKA_MODULUS: CK_ATTRIBUTE_TYPE = 0x00000120;
+pub const CKA_MODULUS_BITS: CK_ATTRIBUTE_TYPE = 0x00000121;
+pub const CKA_PUBLIC_EXPONENT: CK_ATTRIBUTE_TYPE = 0x00000122;
+pub const CKA_PRIVATE_EXPONENT: CK_ATTRIBUTE_TYPE = 0x00000123;
+
+pub const CKO_PUBLIC_KEY: u64  =       0x00000002;
+pub const CKO_PRIVATE_KEY: u64  =       0x00000003;
+
+pub const CKM_VENDOR_DEFINED: u64 = 0x80000000;
+// PKCS#11 CKM_ mechanism constants
+pub const CKM_RSA_PKCS_KEY_PAIR_GEN: u64 = 0x00000000;
+pub const CKM_RSA_PKCS: u64 = 0x00000001;
+pub const CKM_RSA_X_509: u64 = 0x00000003;
+pub const CKM_EC_KEY_PAIR_GEN: u64 = 0x00001040;
+pub const CKM_ECDSA:           u64 = 0x00001041;
+pub const CKM_ECDSA_SHA1:      u64 = 0x00001042;
+pub const CKM_ECDSA_SHA224: u64 = 0x00001043;
+pub const CKM_ECDSA_SHA256: u64 = 0x00001044;
+pub const CKM_ECDSA_SHA384: u64 = 0x00001045;
+pub const CKM_ECDSA_SHA512: u64 = 0x00001046;
+pub const CKM_AES_KEY_GEN : u64 =              0x00001080;
+pub const CKM_SHA256: u64 = 0x00000250;
+pub const CKM_SHA384: u64 = 0x00000251;
+pub const CKM_SHA512: u64 = 0x00000252;
+pub const CKM_SHA256_HMAC: u64 = 0x00000255;
+pub const CKM_SHA384_HMAC: u64 = 0x00000256;
+pub const CKM_SHA512_HMAC: u64 = 0x00000257;
+pub const CKM_IBM_ED25519_SHA512: u64 = CKM_VENDOR_DEFINED + 0x1001c;
+pub const CKM_AES_CBC_PAD: u64 =                0x00001085;
+
+
+pub type CK_ULONG = u64;
+pub type CK_KEY_TYPE = CK_ULONG;
+pub const CKK_RSA: CK_KEY_TYPE = 0x00000000;
+pub const CKK_DSA: CK_KEY_TYPE = 0x00000001;
+pub const CKK_DH: CK_KEY_TYPE = 0x00000002;
+pub const CKK_ECDSA: CK_KEY_TYPE = CKK_EC;
+pub const CKK_EC: CK_KEY_TYPE = 0x00000003;
