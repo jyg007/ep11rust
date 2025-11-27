@@ -840,4 +840,28 @@ pub fn encode_oid(oid_str: &str) -> Vec<u8> {
     der
 }
 
+pub fn generate_random(
+    lib: &Library,
+    target: u64,
+    length: usize,
+) -> Result<Vec<u8>, String> {
+    let mut random_data = vec![0u8; length];
+
+    // Load the C function (unsafe)
+    let m_generate_random: Symbol<
+        unsafe extern "C" fn(*mut u8, u64, u64) -> u64
+    > = unsafe { lib.get(b"m_GenerateRandom\0") }
+        .map_err(|e| e.to_string())?;
+
+    // Call the function
+    let rc = unsafe {
+        m_generate_random(random_data.as_mut_ptr(), length as u64, target)
+    };
+
+    if rc != CKR_OK {
+        return Err(to_error(rc));
+    }
+
+    Ok(random_data)
+}
 

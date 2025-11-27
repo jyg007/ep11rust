@@ -6,6 +6,7 @@ use ep11::Mechanism;
 use ep11::Attribute; 
 use ep11::generate_key_pair; 
 use ep11::generate_key; 
+use ep11::generate_random; 
 use ep11::sign_single;
 use ep11::encrypt_single;
 use ep11::decrypt_single;
@@ -17,7 +18,6 @@ use sha2::{Sha256, Digest};
 // Assuming the necessary imports and structs are defined in the same file 
  
 fn main() { 
- 
    // Load the ep11 shared library 
     let lib = unsafe { 
        Library::new("libep11.so").expect("Failed to load libep11") 
@@ -131,8 +131,15 @@ let (pk,sk) = match result {
 
     println!("Signature (hex) = {}", hex::encode(&signature)); 
     
-    let iv = vec![0u8; 16];
+    //let iv = vec![0u8; 16];
 
+    let iv = match generate_random(&lib, target, 16) {
+        Ok(iv) => iv,
+        Err(e) => {
+            eprintln!("Failed to generate IV: {}", e);
+            return;
+        }
+    };
     // 2. Build AES-CBC-PAD mechanism with the IV
     let mechanism = Mechanism {
         mechanism: CKM_AES_CBC_PAD,
@@ -166,5 +173,14 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
     Err(e) => eprintln!("Decryption error: {}", e),
 }
 
+ // Generate random IV
+    let iv = match generate_random(&lib, target, 16) {
+        Ok(iv) => iv,
+        Err(e) => {
+            eprintln!("Failed to generate IV: {}", e);
+            return;
+        }
+    };
+    println!("random (hex) = {}", hex::encode(&iv));
 } 
  
