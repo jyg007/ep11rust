@@ -125,13 +125,17 @@ let (pk,sk) = match result {
     };
 
     println!("Signature (hex) = {}", hex::encode(&signature)); 
+    match verify_single(target, &mechanism, pk.clone(), &sign_data, &signature) {
+        Ok(()) => println!("Signature verification succeeded"),
+        Err(e) => eprintln!("Signature verification failed: {}", e),
+    }
     
-    //let iv = vec![0u8; 16];
 
 //************************************************************************************************
 //************************************************************************************************
 //************************************************************************************************
 //************************************************************************************************
+    //let iv = vec![0u8; 16];
     let iv = match generate_random( target, 16) {
         Ok(iv) => iv,
         Err(e) => {

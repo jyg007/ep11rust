@@ -215,6 +215,19 @@ fn init_generate_random() -> &'static Symbol<'static, unsafe extern "C" fn(*mut 
     })
 }
 
+static M_VERIFY_SINGLE: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64, *mut CK_MECHANISM, *mut u8, u64, *mut u8, u64, u64
+) -> u64>> = OnceLock::new();
+
+fn init_verify_single() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64, *mut CK_MECHANISM, *mut u8, u64, *mut u8, u64, u64
+) -> u64> {
+    M_VERIFY_SINGLE.get_or_init(|| {
+        let lib = init_lib(); // your global library loader function
+        unsafe { lib.get(b"m_VerifySingle\0").expect("Cannot load m_VerifySingle") }
+    })
+}
+
 pub const MAX_BLOB_SIZE: usize = 9000;
 
 pub const XCP_OK: u32 = 0;
@@ -1250,3 +1263,47 @@ pub fn generate_random(
     Ok(random_data)
 }
 
+//************************************************************************************************
+//************************************************************************************************
+pub fn verify_single(
+    target: u64,
+    mechanism: &Mechanism,
+    public_key: Vec<u8>,
+    data: &[u8],
+    sig: &[u8],
+) -> Result<(), String> {
+    // Allocate mechanism arena
+    let mut mech_arena = Arena::new();
+    let mut mech_struct = CK_MECHANISM {
+        mechanism: mechanism.mechanism,
+        pParameter: std::ptr::null_mut(),
+        ulParameterLen: 0,
+    };
+
+    // If mechanism has parameters, allocate them in the arena
+    if let Some(param) = &mechanism.parameter {
+        let buf_ptr = mech_arena.allocate(param);
+        mech_struct.pParameter = buf_ptr.ptr;
+        mech_struct.ulParameterLen = param.len() as u64;
+    }
+
+    // Convert keys/data/signature to raw pointers
+    let pk_ptr = public_key.as_ptr() as *mut u8;
+    let pk_len = public_key.len() as u64;
+    let data_ptr = data.as_ptr() as *mut u8;
+    let data_len = data.len() as u64;
+    let sig_ptr = sig.as_ptr() as *mut u8;
+    let sig_len = sig.len() as u64;
+
+    // Call the C function
+    let rc = unsafe {
+        let m_verify_single = init_verify_single(); // your OnceLock cached pointer
+        m_verify_single(pk_ptr, pk_len, &mut mech_struct, data_ptr, data_len, sig_ptr, sig_len, target)
+    };
+
+    if rc == CKR_OK {
+        Ok(())
+    } else {
+        Err(format!("m_VerifySingle failed: {:#X}", rc))
+    }
+}
