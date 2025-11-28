@@ -1,4 +1,4 @@
-#EP11 PKCS#11 Rust Bindings
+# EP11 PKCS#11 Rust Bindings
 
 How to test main.rs sample program
 
