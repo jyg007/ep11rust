@@ -12,11 +12,13 @@ use ep11::sign_single;
 use ep11::encrypt_single;
 use ep11::decrypt_single;
 use ep11::unwrap_key;
+use ep11::wrap_key;
 use ep11::encode_oid;
 use ep11::new_btc_derive_params;
 use ep11::BTCDeriveParams;
-use crate::ep11::Ep11; 
 use crate::constants::*; 
+use crate::ep11::OIDNAMEDCURVESECP256K1;
+use crate::ep11::OIDNAMEDCURVEED25519;
 use libloading::Library;
 use sha2::{Sha256, Digest};
 use std::env;
@@ -24,20 +26,15 @@ use std::env;
 // Assuming the necessary imports and structs are defined in the same file 
  
 fn main() { 
-   // Load the ep11 shared library 
-    let lib = unsafe { 
-       Library::new("libep11.so").expect("Failed to load libep11") 
-    }; 
- 
-   // Call the HsmInit function (from previous code) 
-    let target = unsafe { hsm_init("03.19", false, &lib) }.expect("HSM initialization failed"); 
+    let target = unsafe { hsm_init("03.19", false) }.expect("HSM initialization failed"); 
  
 //************************************************************************************************
 //************************************************************************************************
 //************************************************************************************************
 //************************************************************************************************
    // Prepare EC parameters (OIDNamedCurveSecp256k1) 
-    let ec_parameters = encode_oid("1.3.132.0.10"); 
+    //let ec_parameters = encode_oid("1.3.132.0.10"); 
+    let ec_parameters = encode_oid(OIDNAMEDCURVESECP256K1); 
 //    println!("{:?}", ec_parameters); 
  
  
@@ -66,7 +63,7 @@ fn main() {
  
    // Call GenerateKeyPair function 
    let result = unsafe { 
-       generate_key_pair(&lib, 
+       generate_key_pair( 
            target, 
            &mech, 
            public_key_template, 
@@ -105,7 +102,7 @@ let (pk,sk) = match result {
        Attribute::new(CKA_EXTRACTABLE,true),
    ];
    let result2 = unsafe { 
-       generate_key(&lib, 
+       generate_key( 
            target, 
            &mech, 
            key_template, 
@@ -139,7 +136,7 @@ let (pk,sk) = match result {
         parameter: None,
     };
     // sk should be Option<Vec<u8>> if following our SignSingle API
-    let signature = match sign_single(&lib, target, &mechanism, Some(sk.clone()), &sign_data) {
+    let signature = match sign_single( target, &mechanism, Some(sk.clone()), &sign_data) {
         Ok(sig) => sig,
         Err(e) => {
             eprintln!("Sign error: {}", e);
@@ -155,7 +152,7 @@ let (pk,sk) = match result {
 //************************************************************************************************
 //************************************************************************************************
 //************************************************************************************************
-    let iv = match generate_random(&lib, target, 16) {
+    let iv = match generate_random( target, 16) {
         Ok(iv) => iv,
         Err(e) => {
             eprintln!("Failed to generate IV: {}", e);
@@ -169,7 +166,7 @@ let (pk,sk) = match result {
     };
 
     let mut data = b"this is a string that will be ciphered in rust";
-    let cipher = match encrypt_single(&lib, target, &mechanism, k.clone(), data) {
+    let cipher = match encrypt_single( target, &mechanism, k.clone(), data) {
         Ok(cip) => cip,
         Err(e) => {
             eprintln!("Encrypt error: {}", e);
@@ -194,13 +191,13 @@ let (pk,sk) = match result {
         parameter: Some(iv2.to_vec()),
     };
 
-match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
+match decrypt_single( target, &mechanism, k.clone(), &ciphertext2) {
     Ok(plain) => println!("plain = {}", String::from_utf8_lossy(&plain)),
     Err(e) => eprintln!("Decryption error: {}", e),
 }
 
  // Generate random IV
-    let iv = match generate_random(&lib, target, 16) {
+    let iv = match generate_random( target, 16) {
         Ok(iv) => iv,
         Err(e) => {
             eprintln!("Failed to generate IV: {}", e);
@@ -226,13 +223,13 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
        Attribute::new(CKA_DECRYPT,true),
    ];
    let result2 = unsafe { 
-       generate_key(&lib, 
+       generate_key( 
            target, 
            &mech, 
            key_template, 
        ) 
    }; 
-   let (k, csum) = match result2 {
+   let (ref k, ref csum) = match result2 {
         Ok((k, csum)) => (k, csum),
         Err(error) => {
             eprintln!("Error: {}", error);
@@ -249,7 +246,7 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
     let seed_hex = "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542";
     let seed = hex::decode(seed_hex).expect("Invalid hex string");
 
-    let cipher = match encrypt_single(&lib, target, &mechanism, k.clone(), &seed) {
+    let cipher = match encrypt_single( target, &mechanism, k.clone(), &seed) {
         Ok(cip) => cip,
         Err(e) => {
             eprintln!("Encrypt error: {}", e);
@@ -268,8 +265,7 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
        Attribute::new(CKA_CLASS,CKO_SECRET_KEY),
        Attribute::new(CKA_KEY_TYPE,CKK_GENERIC_SECRET),
    ];
-   println!("hello");
-    let (seedblob, csum) = match unwrap_key(&lib, target, &Mechanism { mechanism: CKM_AES_CBC_PAD, parameter: Some(iv.clone()) }, k,cipher ,key_template4) {
+    let (seedblob, csum) = match unwrap_key( target, &Mechanism { mechanism: CKM_AES_CBC_PAD, parameter: Some(iv.clone()) }, k.clone(),cipher ,key_template4) {
     Ok((uk, cs)) => (uk, cs),
     Err(e) => {
         eprintln!("Unwrap error: {}", e);
@@ -277,6 +273,16 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
     }
    };
   
+    let wrapkey = match wrap_key( target, &Mechanism { mechanism: CKM_AES_CBC_PAD, parameter: Some(iv.clone()) }, k.clone(),seedblob.clone()) {
+        Ok(wk) => wk,
+        Err(e) => {
+            eprintln!("Wrap error: {}", e);
+            return;
+        }
+   };
+
+   println!("wrapkey = {}", hex::encode(&wrapkey));
+   
 
 //************************************************************************************************
 //************************************************************************************************
@@ -284,7 +290,8 @@ match decrypt_single(&lib, target, &mechanism, k.clone(), &ciphertext2) {
 //************************************************************************************************
 
 // ASN.1 OID for secp256k1
-let ec_parameters = encode_oid("1.3.132.0.10");
+//let ec_parameters = encode_oid("1.3.132.0.10");
+    let ec_parameters = encode_oid(OIDNAMEDCURVEED25519); 
 
 // DeriveKey attributes (equivalent to Go map)
 let derive_key_template = vec![
@@ -337,7 +344,7 @@ match base_key_bytes {
 
 // ---- Call Rust DeriveKey ----
 let (new_key_bytes, checksum) =
-    match derive_key(&lib, target, &mech, base_key_bytes, derive_key_template) {
+    match derive_key( target, &mech, base_key_bytes, derive_key_template) {
         Ok((k, c)) => (k, c),
         Err(e) => panic!("Derived Child Key request error: {}", e),
     };

@@ -9,7 +9,9 @@ use libloading::{Library, Symbol};
 use std::sync::Mutex;
 use std::slice;
 use std::mem;
+use std::sync::OnceLock;
 
+static LIB: OnceLock<Library> = OnceLock::new();
 
 pub const MAX_BLOB_SIZE: usize = 9000;
 
@@ -25,29 +27,6 @@ pub const XCP_ADMCTR_BYTES: usize = 16;
 pub const XCP_SERIALNR_CHARS: usize = 8;
 pub const MAX_FNAME_CHARS: usize = 256;
 
-pub struct Ep11 {
-    pub m_GenerateKeyPair: Symbol<'static, unsafe extern "C" fn(
-        target: u64,
-        mechanism: *const CK_MECHANISM,
-        pPublicKeyTemplate: *const CK_ATTRIBUTE,
-        ulPublicKeyAttributeCount: u64,
-        pPrivateKeyTemplate: *const CK_ATTRIBUTE,
-        ulPrivateKeyAttributeCount: u64,
-        phPublicKey: *mut u64,
-        phPrivateKey: *mut u64,
-    ) -> u64>,
-    // Add more as needed
-}
-/*
-impl Ep11 {
-    pub unsafe fn new(lib: &libloading::Library) -> Ep11 {
-        Ep11 {
-            m_GenerateKeyPair: lib.get(b"m_GenerateKeyPair\0").unwrap(),
-            // Initialize other fields as necessary
-        }
-    }
-}
-*/
 #[repr(C)]
 #[derive(Debug)]
 pub struct CK_MECHANISM {
@@ -101,8 +80,14 @@ static LOGIN_BLOB: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static LOGIN_BLOB_LEN: Mutex<u64> = Mutex::new(0);
 
 // Constants for OIDs
-const OIDNAMEDCURVESECP256K1: &str = "1.3.132.0.10";
-const OIDNAMEDCURVEED25519: &str = "1.3.101.112";
+pub const OIDNAMEDCURVESECP256K1: &str = "1.3.132.0.10";
+pub const OIDNAMEDCURVEED25519: &str = "1.3.101.112";
+
+fn init_lib() -> &'static Library {
+    LIB.get_or_init(|| {
+        unsafe { Library::new("libep11.so").expect("Failed to load libep11") }
+    })
+}
 
 // SetLoginBlob function to set global blob and its length
 pub fn set_login_blob(id_bytes: &[u8]) {
@@ -131,6 +116,31 @@ pub fn get_login_blob_len() -> u64 {
 fn to_error(code: u64) -> String {
     format!("Error code: {:#X}", code)
 }
+
+struct Ep11Api<'lib> {
+    m_wrap_key: Symbol<'lib, unsafe extern "C" fn(
+        key: *const u8,
+        key_len: u64,
+        kek: *const u8,
+        kek_len: u64,
+        mac_key: *const u8,
+        mac_key_len: u64,
+        mech: *const CK_MECHANISM,
+        wrapped: *mut u8,
+        wrapped_len: *mut u64,
+        target: u64,
+    ) -> u64>,
+    // Add other function pointers as needed
+}
+
+impl<'lib> Ep11Api<'lib> {
+    unsafe fn new(lib: &'lib Library) -> Result<Self, String> {
+        Ok(Self {
+            m_wrap_key: lib.get(b"m_WrapKey\0").map_err(|e| e.to_string())?,
+        })
+    }
+}
+
 
 #[derive(Debug)]
 pub struct Attribute {
@@ -353,8 +363,8 @@ println!("Value: {:?}", value_bytes);
     }
 }
 // Function to generate key pair
-pub fn generate_key_pair(lib: &Library,target: u64, mechanism: &Mechanism, pk_attributes: Vec<Attribute>, sk_attributes: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
-
+pub fn generate_key_pair(target: u64, mechanism: &Mechanism, pk_attributes: Vec<Attribute>, sk_attributes: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Convert attributes
@@ -377,8 +387,8 @@ pub fn generate_key_pair(lib: &Library,target: u64, mechanism: &Mechanism, pk_at
     }
 
     // Buffers to store the keys
-    let mut sk_key = vec![0u8; 9000]; // Adjust size as needed
-    let mut pk_key = vec![0u8; 9000]; // Adjust size as needed
+    let mut sk_key = vec![0u8; MAX_BLOB_SIZE]; // Adjust size as needed
+    let mut pk_key = vec![0u8; MAX_BLOB_SIZE]; // Adjust size as needed
     let mut pk_key_len: u64 = pk_key.len() as u64;
     let mut sk_key_len: u64 = sk_key.len() as u64;
 
@@ -427,14 +437,92 @@ pub fn generate_key_pair(lib: &Library,target: u64, mechanism: &Mechanism, pk_at
     Ok((pk_key, sk_key))
 }
 
+
+//************************************************************************************************
+//************************************************************************************************
+pub fn wrap_key(
+    target: u64,
+    mechanism: &Mechanism,
+    kek: Vec<u8>,
+    key: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    let lib = init_lib();
+    unsafe {
+        // EP11 API
+        let m_wrap_key: Symbol<
+            unsafe extern "C" fn(
+                key: *const u8,
+                key_len: u64,
+                kek: *const u8,
+                kek_len: u64,
+                mac_key: *const u8,
+                mac_key_len: u64,
+                mech: *const CK_MECHANISM,
+                wrapped: *mut u8,
+                wrapped_len: *mut u64,
+                target: u64,
+            ) -> u64,
+        > = lib.get(b"m_WrapKey").map_err(|e| e.to_string())?;
+        // Convert Mechanism → CK_MECHANISM
+        let mut arena = Arena::new();
+
+        let mut mech_struct = CK_MECHANISM {
+            mechanism: mechanism.mechanism,
+            pParameter: ptr::null_mut(),
+            ulParameterLen: 0,
+        };
+
+        if let Some(param) = &mechanism.parameter {
+            let buf_ptr = arena.allocate(param);
+            mech_struct.pParameter = buf_ptr.ptr;
+            mech_struct.ulParameterLen = param.len() as u64;
+        }
+        // Output buffer
+        let mut wrapped = vec![0u8; MAX_BLOB_SIZE];
+        let mut wrapped_len = wrapped.len() as u64;
+
+        // Input pointers
+        let key_ptr = if key.is_empty() { std::ptr::null() } else { key.as_ptr() };
+        let kek_ptr = if kek.is_empty() { std::ptr::null() } else { kek.as_ptr() };
+
+        // No MAC key used
+        let mac_key_ptr: *const u8 = std::ptr::null();
+        let mac_key_len: u64 = 0;
+
+        // Call EP11 m_WrapKey
+        let rc = (m_wrap_key)(
+            key_ptr,
+            key.len() as u64,
+            kek_ptr,
+            kek.len() as u64,
+            mac_key_ptr,
+            mac_key_len,
+            &mut mech_struct,
+            wrapped.as_mut_ptr(),
+            &mut wrapped_len,
+            target,
+        );
+
+        if rc != CKR_OK {
+            return Err(format!("m_WrapKey failed: {:#X}", rc));
+        }
+        
+
+        wrapped.truncate(wrapped_len as usize);
+        Ok(wrapped)
+    }
+}
+
+//************************************************************************************************
+//************************************************************************************************
 pub fn unwrap_key(
-    lib: &Library,
     target: u64,
     mechanism: &Mechanism,
     kek: Vec<u8>,
     wrapped_key: Vec<u8>,
     template: Vec<Attribute>,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let lib = init_lib();
     let mut attr_arena = Arena::new();
     let mut t_ctx = AttributeContext::new(template);
     let mut mech_struct = CK_MECHANISM {
@@ -504,13 +592,15 @@ pub fn unwrap_key(
     Ok((unwrapped_key, csum))
 }
 
+//************************************************************************************************
+//************************************************************************************************
 pub fn decrypt_single(
-    lib: &Library,
     target: u64,
     mechanism: &Mechanism,
     k: Vec<u8>,
     cipher: &[u8],
 ) -> Result<Vec<u8>, String> {
+    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Create mechanism
@@ -534,7 +624,7 @@ pub fn decrypt_single(
     let cipher_len = cipher.len() as u64;
 
     // Allocate buffer for plaintext
-    let mut plain = vec![0u8; cipher.len() + 9000];
+    let mut plain = vec![0u8; cipher.len() + MAX_BLOB_SIZE];
     let mut plain_len = plain.len() as u64;
     let plain_ptr = plain.as_mut_ptr();
 
@@ -574,13 +664,15 @@ pub fn decrypt_single(
     Ok(plain)
 }
 
+//************************************************************************************************
+//************************************************************************************************
 pub fn encrypt_single(
-    lib: &Library,
     target: u64,
     mechanism: &Mechanism,
     k: Vec<u8>,
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
+    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Create mechanism
@@ -606,7 +698,7 @@ pub fn encrypt_single(
         (data.as_ptr() as *mut u8, data.len() as u64)
     };
 
-    let mut cipher = vec![0u8; data.len() + 9000];
+    let mut cipher = vec![0u8; data.len() + MAX_BLOB_SIZE];
     let mut cipher_len = cipher.len() as u64;
     let cipher_ptr = cipher.as_mut_ptr();
 
@@ -647,8 +739,10 @@ pub fn encrypt_single(
 }
 
 // Function to generate key 
-pub fn generate_key(lib: &Library,target: u64, mechanism: &Mechanism, k_attributes: Vec<Attribute>) -> Result<(Vec<u8>,Vec<u8>), String> {
-
+//************************************************************************************************
+//************************************************************************************************
+pub fn generate_key(target: u64, mechanism: &Mechanism, k_attributes: Vec<Attribute>) -> Result<(Vec<u8>,Vec<u8>), String> {
+    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Convert attributes
@@ -668,9 +762,9 @@ pub fn generate_key(lib: &Library,target: u64, mechanism: &Mechanism, k_attribut
     }
 
     // Buffers to store the keys
-    let mut k_key = vec![0u8; 9000]; // Adjust size as needed
+    let mut k_key = vec![0u8; MAX_BLOB_SIZE]; // Adjust size as needed
     let mut k_key_len: u64 = k_key.len() as u64;
-    let mut csum = vec![0u8; 9000]; // Adjust size as needed
+    let mut csum = vec![0u8; MAX_BLOB_SIZE]; // Adjust size as needed
     let mut csum_len: u64 = csum.len() as u64;
 
     let rc = unsafe {
@@ -714,13 +808,15 @@ pub fn generate_key(lib: &Library,target: u64, mechanism: &Mechanism, k_attribut
     Ok((k_key,csum))
 }
 
+//************************************************************************************************
+//************************************************************************************************
 pub fn sign_single(
-    lib: &Library,
     target: u64,
     mechanism: &Mechanism,
     sk: Option<Vec<u8>>,
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
+    let lib = init_lib();
     let mut arena = Arena::new();
 
     // ---- Build CK_MECHANISM ----
@@ -753,7 +849,7 @@ pub fn sign_single(
     };
 
     // ---- Output signature buffer ----
-    let mut sig = vec![0u8; 9000];     // adjust to MAX_BLOB_SIZE
+    let mut sig = vec![0u8; MAX_BLOB_SIZE];     // adjust to MAX_BLOB_SIZE
     let sig_ptr = sig.as_mut_ptr();
     let mut sig_len: u64 = sig.len() as u64;
 
@@ -795,8 +891,11 @@ pub fn sign_single(
 }
 
 
-pub fn hsm_init(input: &str, single: bool, lib: &Library) -> Result<u64, String> {
+//************************************************************************************************
+//************************************************************************************************
+pub fn hsm_init(input: &str, single: bool) -> Result<u64, String> {
     unsafe {
+        let lib = init_lib();
         let m_init: Symbol<unsafe extern "C" fn() -> c_int> =
             lib.get(b"m_init").map_err(|e| e.to_string())?;
         let m_add_module: Symbol<unsafe extern "C" fn(*mut XCP_Module, *mut u64) -> u64> =
@@ -927,7 +1026,10 @@ pub fn new_btc_derive_params(p: &BTCDeriveParams) -> Vec<u8> {
 }
 
 
-pub fn derive_key( lib: &Library, target: u64, mechanism: &Mechanism, base_key: Option<&[u8]>, attrs: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
+//************************************************************************************************
+//************************************************************************************************
+pub fn derive_key( target: u64, mechanism: &Mechanism, base_key: Option<&[u8]>, attrs: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let lib = init_lib();
     unsafe {
         // Load symbol
         let m_derive_key: Symbol<
@@ -974,14 +1076,14 @@ pub fn derive_key( lib: &Library, target: u64, mechanism: &Mechanism, base_key: 
         };
 
         // Output buffers
-        const MAX_BLOB_SIZE: usize = 4096;
+//        const MAX_BLOB_SIZE: usize = 4096;
         let mut new_key = vec![0u8; MAX_BLOB_SIZE];
         let mut csum = vec![0u8; MAX_BLOB_SIZE];
 
         let mut new_key_len = new_key.len() as u64;
         let mut csum_len = csum.len() as u64;
 
-        // Empty data buffer (as in Go)
+        // Empty data buffer 
         let data_ptr = std::ptr::null_mut();
         let data_len = 0u64;
 
@@ -1018,6 +1120,8 @@ pub fn derive_key( lib: &Library, target: u64, mechanism: &Mechanism, base_key: 
     }
 }
 
+//************************************************************************************************
+//************************************************************************************************
 pub fn encode_oid(oid_str: &str) -> Vec<u8> {
     // Split OID string into numbers
     let numbers: Vec<u32> = oid_str
@@ -1067,11 +1171,13 @@ pub fn encode_oid(oid_str: &str) -> Vec<u8> {
     der
 }
 
+//************************************************************************************************
+//************************************************************************************************
 pub fn generate_random(
-    lib: &Library,
     target: u64,
     length: usize,
 ) -> Result<Vec<u8>, String> {
+    let lib = init_lib();
     let mut random_data = vec![0u8; length];
 
     // Load the C function (unsafe)
