@@ -9,7 +9,7 @@ use std::env;
 // Assuming the necessary imports and structs are defined in the same file 
  
 fn main() { 
-    let target = unsafe { hsm_init("03.19", false) }.expect("HSM initialization failed"); 
+   let target = hsm_init("03.19", false).expect("HSM initialization failed"); 
  
 //************************************************************************************************
 //************************************************************************************************
@@ -45,14 +45,13 @@ fn main() {
    ]; 
  
    // Call GenerateKeyPair function 
-   let result = unsafe { 
+   let result = 
        generate_key_pair( 
            target, 
            &mech, 
            public_key_template, 
            private_key_template, 
-       ) 
-   }; 
+       ); 
  
 let (pk,sk) = match result { 
    Ok((pk, sk)) => { 
@@ -84,13 +83,11 @@ let (pk,sk) = match result {
        Attribute::new(CKA_ENCRYPT,true),
        Attribute::new(CKA_EXTRACTABLE,true),
    ];
-   let result2 = unsafe { 
-       generate_key( 
+   let result2 =  generate_key( 
            target, 
            &mech, 
            key_template, 
-       ) 
-   }; 
+      );
    let (k,csum) = match result2 { 
    Ok((k, csum)) => { 
        // Successfully generated the keys 
@@ -148,7 +145,7 @@ let (pk,sk) = match result {
         parameter: Some(iv.clone()), // pass IV as parameter
     };
 
-    let mut data = b"this is a string that will be ciphered in rust";
+    let data = b"this is a string that will be ciphered in rust";
     let cipher = match encrypt_single( target, &mechanism, k.clone(), data) {
         Ok(cip) => cip,
         Err(e) => {
@@ -205,13 +202,12 @@ match decrypt_single( target, &mechanism, k.clone(), &ciphertext2) {
        Attribute::new(CKA_ENCRYPT,true),
        Attribute::new(CKA_DECRYPT,true),
    ];
-   let result2 = unsafe { 
+   let result2 =
        generate_key( 
            target, 
            &mech, 
            key_template, 
-       ) 
-   }; 
+       );
    let (ref k, ref csum) = match result2 {
         Ok((k, csum)) => (k, csum),
         Err(error) => {

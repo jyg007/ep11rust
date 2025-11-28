@@ -1,14 +1,10 @@
 extern crate libc;
-use libc::{calloc, free};
-use std::ffi::CString;
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int, c_uint, c_ulong};
+use std::os::raw::{c_char, c_int,  c_ulong};
 use std::ptr;
 use std::time::SystemTime;
 use libloading::{Library, Symbol};
 use std::sync::Mutex;
-use std::slice;
-use std::mem;
 use std::sync::OnceLock;
 
 static LIB: OnceLock<Library> = OnceLock::new();
@@ -323,31 +319,6 @@ fn to_error(code: u64) -> String {
     format!("Error code: {:#X}", code)
 }
 
-struct Ep11Api<'lib> {
-    m_wrap_key: Symbol<'lib, unsafe extern "C" fn(
-        key: *const u8,
-        key_len: u64,
-        kek: *const u8,
-        kek_len: u64,
-        mac_key: *const u8,
-        mac_key_len: u64,
-        mech: *const CK_MECHANISM,
-        wrapped: *mut u8,
-        wrapped_len: *mut u64,
-        target: u64,
-    ) -> u64>,
-    // Add other function pointers as needed
-}
-
-impl<'lib> Ep11Api<'lib> {
-    unsafe fn new(lib: &'lib Library) -> Result<Self, String> {
-        Ok(Self {
-            m_wrap_key: lib.get(b"m_WrapKey\0").map_err(|e| e.to_string())?,
-        })
-    }
-}
-
-
 #[derive(Debug)]
 pub struct Attribute {
     pub r#type: u64,
@@ -570,7 +541,6 @@ println!("Value: {:?}", value_bytes);
 }
 // Function to generate key pair
 pub fn generate_key_pair(target: u64, mechanism: &Mechanism, pk_attributes: Vec<Attribute>, sk_attributes: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Convert attributes
@@ -636,7 +606,6 @@ pub fn wrap_key(
     kek: Vec<u8>,
     key: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
-    let lib = init_lib();
     let m_wrap_key=init_wrap_key();
         // Convert Mechanism → CK_MECHANISM
         let mut arena = Arena::new();
@@ -698,7 +667,6 @@ pub fn unwrap_key(
     wrapped_key: Vec<u8>,
     template: Vec<Attribute>,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let lib = init_lib();
     let mut attr_arena = Arena::new();
     let mut t_ctx = AttributeContext::new(template);
     let mut mech_struct = CK_MECHANISM {
@@ -763,7 +731,6 @@ pub fn decrypt_single(
     k: Vec<u8>,
     cipher: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Create mechanism
@@ -824,7 +791,6 @@ pub fn encrypt_single(
     k: Vec<u8>,
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Create mechanism
@@ -883,7 +849,6 @@ pub fn encrypt_single(
 //************************************************************************************************
 //************************************************************************************************
 pub fn generate_key(target: u64, mechanism: &Mechanism, k_attributes: Vec<Attribute>) -> Result<(Vec<u8>,Vec<u8>), String> {
-    let lib = init_lib();
     let mut arena = Arena::new();
 
     // Convert attributes
@@ -942,7 +907,6 @@ pub fn sign_single(
     sk: Option<Vec<u8>>,
     data: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let lib = init_lib();
     let mut arena = Arena::new();
 
     // ---- Build CK_MECHANISM ----
@@ -1142,7 +1106,6 @@ pub fn new_btc_derive_params(p: &BTCDeriveParams) -> Vec<u8> {
 //************************************************************************************************
 //************************************************************************************************
 pub fn derive_key( target: u64, mechanism: &Mechanism, base_key: Option<&[u8]>, attrs: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let lib = init_lib();
     unsafe {
     let m_derive_key=init_derive_key();
     let mut arena = Arena::new();
@@ -1271,7 +1234,6 @@ pub fn generate_random(
     target: u64,
     length: usize,
 ) -> Result<Vec<u8>, String> {
-    let lib = init_lib();
     let mut random_data = vec![0u8; length];
 
     // Load the C function (unsafe)
