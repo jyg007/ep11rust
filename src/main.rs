@@ -1,25 +1,8 @@
 mod ep11; 
-mod constants; 
- 
-use ep11::hsm_init; 
-use ep11::Mechanism; 
-use ep11::Attribute; 
-use ep11::generate_key_pair; 
-use ep11::generate_key; 
-use ep11::generate_random; 
-use ep11::derive_key; 
-use ep11::sign_single;
-use ep11::encrypt_single;
-use ep11::decrypt_single;
-use ep11::unwrap_key;
-use ep11::wrap_key;
-use ep11::encode_oid;
-use ep11::new_btc_derive_params;
-use ep11::BTCDeriveParams;
-use crate::constants::*; 
-use crate::ep11::OIDNAMEDCURVESECP256K1;
-use crate::ep11::OIDNAMEDCURVEED25519;
-use libloading::Library;
+mod ep11constants; 
+
+use crate::ep11::*;
+use crate::ep11constants::*; 
 use sha2::{Sha256, Digest};
 use std::env;
 

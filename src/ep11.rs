@@ -13,6 +13,212 @@ use std::sync::OnceLock;
 
 static LIB: OnceLock<Library> = OnceLock::new();
 
+// Static cached function pointer
+static M_SIGN_SINGLE: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64, *mut CK_MECHANISM, *mut u8, u64, *mut u8, *mut u64, u64
+) -> u64>> = OnceLock::new();
+
+
+
+fn init_sign_single() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64, *mut CK_MECHANISM, *mut u8, u64, *mut u8, *mut u64, u64
+) -> u64> {
+    M_SIGN_SINGLE.get_or_init(|| {
+        let lib = init_lib();
+        unsafe { lib.get(b"m_SignSingle\0").expect("Cannot load m_SignSingle") }
+    })
+}
+
+static M_GENERATE_KEYPAIR: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut CK_MECHANISM, *mut CK_ATTRIBUTE, u64,
+    *mut CK_ATTRIBUTE, u64,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64>> = OnceLock::new();
+
+fn init_generate_keypair() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut CK_MECHANISM, *mut CK_ATTRIBUTE, u64,
+    *mut CK_ATTRIBUTE, u64,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64> {
+    M_GENERATE_KEYPAIR.get_or_init(|| {
+        let lib = init_lib(); // your function to initialize/load lib
+        unsafe { lib.get(b"m_GenerateKeyPair\0").expect("Cannot load m_GenerateKeyPair") }
+    })
+}
+
+static M_GENERATE_KEY: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut CK_MECHANISM, *mut CK_ATTRIBUTE, u64,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64>> = OnceLock::new();
+
+fn init_generate_key() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut CK_MECHANISM, *mut CK_ATTRIBUTE, u64,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64> {
+    M_GENERATE_KEY.get_or_init(|| {
+        let lib = init_lib(); // your function that returns &'static Library
+        unsafe { lib.get(b"m_GenerateKey\0").expect("Cannot load m_GenerateKey") }
+    })
+}
+
+static M_ENCRYPT_SINGLE: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64,
+    *mut CK_MECHANISM,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64>> = OnceLock::new();
+
+fn init_encrypt_single() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64,
+    *mut CK_MECHANISM,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64> {
+    M_ENCRYPT_SINGLE.get_or_init(|| {
+        let lib = init_lib(); // function returning &'static Library
+        unsafe { lib.get(b"m_EncryptSingle\0").expect("Cannot load m_EncryptSingle") }
+    })
+}
+
+static M_DECRYPT_SINGLE: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64,
+    *mut CK_MECHANISM,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64>> = OnceLock::new();
+
+fn init_decrypt_single() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64,
+    *mut CK_MECHANISM,
+    *mut u8, u64,
+    *mut u8, *mut u64,
+    u64
+) -> u64> {
+    M_DECRYPT_SINGLE.get_or_init(|| {
+        let lib = init_lib(); // your function returning &'static Library
+        unsafe { lib.get(b"m_DecryptSingle\0").expect("Cannot load m_DecryptSingle") }
+    })
+}
+
+static M_DERIVE_KEY: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut CK_MECHANISM,
+    *mut CK_ATTRIBUTE,
+    u64,
+    *mut u8,
+    u64,
+    *mut u8,
+    u64,
+    *mut u8,
+    u64,
+    *mut u8,
+    *mut u64,
+    *mut u8,
+    *mut u64,
+    u64
+) -> u64>> = OnceLock::new();
+
+fn init_derive_key() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut CK_MECHANISM,
+    *mut CK_ATTRIBUTE,
+    u64,
+    *mut u8,
+    u64,
+    *mut u8,
+    u64,
+    *mut u8,
+    u64,
+    *mut u8,
+    *mut u64,
+    *mut u8,
+    *mut u64,
+    u64
+) -> u64> {
+    M_DERIVE_KEY.get_or_init(|| {
+        let lib = init_lib(); // returns &'static Library
+        unsafe { lib.get(b"m_DeriveKey\0").expect("Cannot load m_DeriveKey") }
+    })
+}
+
+static M_UNWRAP_KEY: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64,          // wrapped key
+    *mut u8, u64,          // KEK
+    *mut u8, u64,          // MAC key
+    *mut u8, u64,          // Login blob
+    *mut CK_MECHANISM,     // mechanism
+    *mut CK_ATTRIBUTE, u64,// template
+    *mut u8, *mut u64,     // unwrapped key
+    *mut u8, *mut u64,     // checksum
+    u64,                   // target
+) -> u64>> = OnceLock::new();
+
+fn init_unwrap_key() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8, u64, *mut u8, u64, *mut u8, u64, *mut u8, u64,
+    *mut CK_MECHANISM, *mut CK_ATTRIBUTE, u64,
+    *mut u8, *mut u64, *mut u8, *mut u64,
+    u64
+) -> u64> {
+    M_UNWRAP_KEY.get_or_init(|| {
+        let lib = init_lib(); // returns &'static Library
+        unsafe { lib.get(b"m_UnwrapKey\0").expect("Cannot load m_UnwrapKey") }
+    })
+}
+
+// Static cached function pointer for m_WrapKey
+static M_WRAP_KEY: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    key: *const u8,
+    key_len: u64,
+    kek: *const u8,
+    kek_len: u64,
+    mac_key: *const u8,
+    mac_key_len: u64,
+    mech: *const CK_MECHANISM,
+    wrapped: *mut u8,
+    wrapped_len: *mut u64,
+    target: u64,
+) -> u64>> = OnceLock::new();
+
+fn init_wrap_key() -> &'static Symbol<'static, unsafe extern "C" fn(
+    key: *const u8,
+    key_len: u64,
+    kek: *const u8,
+    kek_len: u64,
+    mac_key: *const u8,
+    mac_key_len: u64,
+    mech: *const CK_MECHANISM,
+    wrapped: *mut u8,
+    wrapped_len: *mut u64,
+    target: u64,
+) -> u64> {
+    M_WRAP_KEY.get_or_init(|| {
+        let lib = init_lib(); // returns &'static Library
+        unsafe { lib.get(b"m_WrapKey\0").expect("Cannot load m_WrapKey") }
+    })
+}
+
+static M_GENERATE_RANDOM: OnceLock<Symbol<'static, unsafe extern "C" fn(*mut u8, u64, u64) -> u64>> = OnceLock::new();
+
+fn init_generate_random() -> &'static Symbol<'static, unsafe extern "C" fn(*mut u8, u64, u64) -> u64> {
+    M_GENERATE_RANDOM.get_or_init(|| {
+        let lib = init_lib(); // Returns &'static Library
+        unsafe { lib.get(b"m_GenerateRandom\0").expect("Cannot load m_GenerateRandom") }
+    })
+}
+
 pub const MAX_BLOB_SIZE: usize = 9000;
 
 pub const XCP_OK: u32 = 0;
@@ -392,25 +598,9 @@ pub fn generate_key_pair(target: u64, mechanism: &Mechanism, pk_attributes: Vec<
     let mut pk_key_len: u64 = pk_key.len() as u64;
     let mut sk_key_len: u64 = sk_key.len() as u64;
 
-    let rc = unsafe {
-        let m_generate_keypair: Symbol<
-                unsafe extern "C" fn(
-        *mut CK_MECHANISM,
-        *mut CK_ATTRIBUTE,
-        u64,
-        *mut CK_ATTRIBUTE,
-        u64,
-        *mut u8,
-        u64,
-        *mut u8,
-        *mut u64,
-        *mut u8,
-        *mut u64,
-        u64,
-    ) -> u64
-        > = lib.get(b"m_GenerateKeyPair\0").map_err(|e| e.to_string())?;
-        let login_blob_ptr = get_login_blob_ptr();
-        let login_blob_len = get_login_blob_len();
+      let m_generate_keypair=init_generate_keypair();
+      let login_blob_ptr = get_login_blob_ptr();
+      let login_blob_len = get_login_blob_len();
       unsafe {
        let rc: u64 = m_generate_keypair(
             &mut mech_struct,
@@ -429,7 +619,7 @@ pub fn generate_key_pair(target: u64, mechanism: &Mechanism, pk_attributes: Vec<
     if rc != CKR_OK {
         return Err(to_error(rc));
     }
-      }
+ //     }
     };
     pk_key.truncate(pk_key_len as usize);
     sk_key.truncate(sk_key_len as usize);
@@ -447,22 +637,7 @@ pub fn wrap_key(
     key: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
     let lib = init_lib();
-    unsafe {
-        // EP11 API
-        let m_wrap_key: Symbol<
-            unsafe extern "C" fn(
-                key: *const u8,
-                key_len: u64,
-                kek: *const u8,
-                kek_len: u64,
-                mac_key: *const u8,
-                mac_key_len: u64,
-                mech: *const CK_MECHANISM,
-                wrapped: *mut u8,
-                wrapped_len: *mut u64,
-                target: u64,
-            ) -> u64,
-        > = lib.get(b"m_WrapKey").map_err(|e| e.to_string())?;
+    let m_wrap_key=init_wrap_key();
         // Convert Mechanism → CK_MECHANISM
         let mut arena = Arena::new();
 
@@ -489,6 +664,7 @@ pub fn wrap_key(
         let mac_key_ptr: *const u8 = std::ptr::null();
         let mac_key_len: u64 = 0;
 
+    unsafe {
         // Call EP11 m_WrapKey
         let rc = (m_wrap_key)(
             key_ptr,
@@ -548,20 +724,7 @@ pub fn unwrap_key(
 
     //t_ctx.print_ck_attributes();
     let rv = unsafe {
-        let m_unwrap_key: Symbol<
-            unsafe extern "C" fn(
-                *mut u8, u64,      // wrapped key
-                *mut u8, u64,      // KEK
-                *mut u8, u64,      // MAC key
-                *mut u8, u64,      // Login blob
-                *mut CK_MECHANISM, // mechanism
-                *mut CK_ATTRIBUTE, u64, // template
-                *mut u8, *mut u64, // unwrapped key
-                *mut u8, *mut u64, // checksum
-                u64,               // target
-            ) -> u64,
-        > = lib.get(b"m_UnwrapKey\0").map_err(|e| e.to_string())?;
-
+        let m_unwrap_key=init_unwrap_key();
         m_unwrap_key(
             wrapped_key.as_ptr() as *mut u8,
             wrapped_key.len() as u64,
@@ -628,18 +791,7 @@ pub fn decrypt_single(
     let mut plain_len = plain.len() as u64;
     let plain_ptr = plain.as_mut_ptr();
 
-    // Load the C function
-    let m_decrypt_single: Symbol<
-        unsafe extern "C" fn(
-            *mut u8, u64,
-            *mut CK_MECHANISM,
-            *mut u8, u64,
-            *mut u8, *mut u64,
-            u64
-        ) -> u64
-    > = unsafe { lib.get(b"m_DecryptSingle\0") }
-    .map_err(|e| e.to_string())?;
-
+    let m_decrypt_single=init_decrypt_single();
     // Call the C function
     let rv = unsafe {
         m_decrypt_single(
@@ -702,18 +854,7 @@ pub fn encrypt_single(
     let mut cipher_len = cipher.len() as u64;
     let cipher_ptr = cipher.as_mut_ptr();
 
-    // Load the C function
-    let m_encrypt_single: Symbol<
-        unsafe extern "C" fn(
-            *mut u8, u64,
-            *mut CK_MECHANISM,
-            *mut u8, u64,
-            *mut u8, *mut u64,
-            u64
-        ) -> u64
-    > =   unsafe { lib.get(b"m_EncryptSingle\0") }
-    .map_err(|e| e.to_string())?;
-
+    let m_encrypt_single=init_encrypt_single();
     // Call the C function
     let rc = unsafe {
         m_encrypt_single(
@@ -767,21 +908,7 @@ pub fn generate_key(target: u64, mechanism: &Mechanism, k_attributes: Vec<Attrib
     let mut csum = vec![0u8; MAX_BLOB_SIZE]; // Adjust size as needed
     let mut csum_len: u64 = csum.len() as u64;
 
-    let rc = unsafe {
-        let m_generate_key: Symbol<
-                unsafe extern "C" fn(
-        *mut CK_MECHANISM,
-        *mut CK_ATTRIBUTE,
-        u64,
-        *mut u8,
-        u64,
-        *mut u8,
-        *mut u64,
-        *mut u8,
-        *mut u64,
-        u64,
-    ) -> u64
-        > = lib.get(b"m_GenerateKey\0").map_err(|e| e.to_string())?;
+       let m_generate_key = init_generate_key();
         let login_blob_ptr = get_login_blob_ptr();
         let login_blob_len = get_login_blob_len();
       unsafe {
@@ -800,7 +927,6 @@ pub fn generate_key(target: u64, mechanism: &Mechanism, k_attributes: Vec<Attrib
     if rc != CKR_OK {
         return Err(to_error(rc));
     }
-      }
     };
     k_key.truncate(k_key_len as usize);
     csum.truncate(csum_len as usize);
@@ -853,20 +979,7 @@ pub fn sign_single(
     let sig_ptr = sig.as_mut_ptr();
     let mut sig_len: u64 = sig.len() as u64;
 
-    // ---- Load the EP11 symbol ----
-    let m_sign_single: Symbol<
-        unsafe extern "C" fn(
-            *mut u8,        // private key
-            u64,            // private key len
-            *mut CK_MECHANISM,
-            *mut u8,        // data
-            u64,            // data len
-            *mut u8,        // output sig
-            *mut u64,       // output sig len
-            u64             // target
-        ) -> u64
-    > = unsafe { lib.get(b"m_SignSingle\0") }
-        .map_err(|e| format!("Cannot load m_SignSingle: {}", e))?;
+    let m_sign_single = init_sign_single();
 
     // ---- Call EP11 ----
     let rc = unsafe {
@@ -1031,26 +1144,7 @@ pub fn new_btc_derive_params(p: &BTCDeriveParams) -> Vec<u8> {
 pub fn derive_key( target: u64, mechanism: &Mechanism, base_key: Option<&[u8]>, attrs: Vec<Attribute>) -> Result<(Vec<u8>, Vec<u8>), String> {
     let lib = init_lib();
     unsafe {
-        // Load symbol
-        let m_derive_key: Symbol<
-            unsafe extern "C" fn(
-                mech: *mut CK_MECHANISM,
-                attrs: *mut CK_ATTRIBUTE,
-                attr_count: u64,
-                base_key: *mut u8,
-                base_key_len: u64,
-                data: *mut u8,
-                data_len: u64,
-                login_blob: *mut u8,
-                login_blob_len: u64,
-                new_key: *mut u8,
-                new_key_len: *mut u64,
-                csum: *mut u8,
-                csum_len: *mut u64,
-                target: u64,
-            ) -> u64,
-        > = lib.get(b"m_DeriveKey").map_err(|e| e.to_string())?;
-
+    let m_derive_key=init_derive_key();
     let mut arena = Arena::new();
 
     // ---- Build CK_MECHANISM ----
@@ -1181,11 +1275,7 @@ pub fn generate_random(
     let mut random_data = vec![0u8; length];
 
     // Load the C function (unsafe)
-    let m_generate_random: Symbol<
-        unsafe extern "C" fn(*mut u8, u64, u64) -> u64
-    > = unsafe { lib.get(b"m_GenerateRandom\0") }
-        .map_err(|e| e.to_string())?;
-
+    let m_generate_random=init_generate_random();
     // Call the function
     let rc = unsafe {
         m_generate_random(random_data.as_mut_ptr(), length as u64, target)
