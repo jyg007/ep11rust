@@ -1,4 +1,10 @@
-# EP11 PKCS#11 Rust Bindings
+# IBM EP11 Rust wrapper for IBM EP11 library
+
+## Overview
+
+`ep11-rust` is a Rust wrapper for IBM's EP11 library, providing low-level access to cryptographic operations on IBM CryptoExpress (CEX) hardware security modules (HSMs).  
+The only required dependency is the `libep11.so` shared library available on systems with IBM EP11 support.
+
 
 How to test main.rs sample program
 

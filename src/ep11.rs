@@ -983,7 +983,7 @@ pub fn sign_single(
 
 //************************************************************************************************
 //************************************************************************************************
-pub fn hsm_init(input: &str, single: bool) -> Result<u64, String> {
+pub fn hsm_init(input: &str) -> Result<u64, String> {
     unsafe {
         let lib = init_lib();
         let m_init: Symbol<unsafe extern "C" fn() -> c_int> =
@@ -1039,11 +1039,13 @@ pub fn hsm_init(input: &str, single: bool) -> Result<u64, String> {
             module.domainmask = [0; 32];
             xcptgtmask_set_dom(&mut module.domainmask, domain);
 
-            module.flags |= if single {
-                XCP_MFL_PROBE | XCP_MFL_MODULE
-            } else {
-                XCP_MFL_VIRTUAL | XCP_MFL_PROBE | XCP_MFL_MODULE
-            };
+            let mut module_flags = XCP_MFL_PROBE | XCP_MFL_MODULE;
+
+            if input.split_whitespace().count() > 1 {
+                module_flags |= XCP_MFL_VIRTUAL;
+            }
+
+            module.flags = module_flags;
 
             let rc = m_add_module(&mut module, &mut target);
             if rc != CKR_OK {

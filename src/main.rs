@@ -9,7 +9,7 @@ use std::env;
 // Assuming the necessary imports and structs are defined in the same file 
  
 fn main() { 
-   let target = hsm_init("03.19", false).expect("HSM initialization failed"); 
+   let target = hsm_init("03.19").expect("HSM initialization failed"); 
  
 //************************************************************************************************
 //************************************************************************************************
