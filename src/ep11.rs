@@ -1049,7 +1049,7 @@ pub fn hsm_init(input: &str) -> Result<u64, String> {
 
             let rc = m_add_module(&mut module, &mut target);
             if rc != CKR_OK {
-                return Err(format!("Error from m_add_module: {:#X}", rc));
+                    println!( "Error from m_add_module: {:#X} | module={:02} | domain={:04}", rc, adapter, domain);
             }
         }
         // Handle EP11LOGIN env variable
