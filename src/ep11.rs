@@ -1011,6 +1011,8 @@ pub fn hsm_init(input: &str) -> Result<u64, String> {
             api: 0,
         };
 
+        let mut success_count = 0usize;
+
         for pair in input.trim().split_whitespace() {
             let parts: Vec<&str> = pair.split('.').collect();
             if parts.len() != 2 {
@@ -1050,8 +1052,16 @@ pub fn hsm_init(input: &str) -> Result<u64, String> {
             let rc = m_add_module(&mut module, &mut target);
             if rc != CKR_OK {
                     println!( "Error from m_add_module: {:#X} | module={:02} | domain={:04}", rc, adapter, domain);
+            } else {
+                success_count += 1;
             }
         }
+
+        // Only fail if ALL modules failed ░
+        if success_count == 0 {
+            return Err("All modules failed to initialize".into());
+        }
+
         // Handle EP11LOGIN env variable
         if let Ok(hex_string) = std::env::var("EP11LOGIN") {
             if !hex_string.is_empty() {
