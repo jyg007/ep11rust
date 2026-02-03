@@ -228,6 +228,102 @@ fn init_verify_single() -> &'static Symbol<'static, unsafe extern "C" fn(
     })
 }
 
+
+static M_GET_XCP_INFO: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    CK_VOID_PTR,
+    *mut CK_ULONG,
+    CK_ULONG,
+    CK_ULONG,
+    u64
+) -> CK_ULONG>> = OnceLock::new();
+
+fn init_get_xcp_info() -> &'static Symbol<'static, unsafe extern "C" fn(
+    CK_VOID_PTR,
+    *mut CK_ULONG,
+    CK_ULONG,
+    CK_ULONG,
+    u64
+) -> CK_ULONG> {
+    M_GET_XCP_INFO.get_or_init(|| {
+        let lib = init_lib();
+        unsafe { lib.get(b"m_get_xcp_info\0").expect("Cannot load m_get_xcp_info") }
+    })
+}
+
+static M_ADMIN: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8,
+    *mut CK_ULONG,
+    *mut u8,
+    *mut CK_ULONG,
+    *mut u8,
+    CK_ULONG,
+    *mut u8,
+    CK_ULONG,
+    u64
+) -> CK_ULONG>> = OnceLock::new();
+
+fn init_m_admin() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8,
+    *mut CK_ULONG,
+    *mut u8,
+    *mut CK_ULONG,
+    *mut u8,
+    CK_ULONG,
+    *mut u8,
+    CK_ULONG,
+    u64
+) -> CK_ULONG> {
+    M_ADMIN.get_or_init(|| {
+        let lib = init_lib();
+        unsafe { lib.get(b"m_admin\0").expect("Cannot load m_admin") }
+    })
+}
+
+static XCPA_CMDBLOCK: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8,
+    CK_ULONG,
+    CK_ULONG,
+    *mut XCPadmresp_T,
+    *mut u8,
+    *mut u8,
+    CK_ULONG
+) -> i32>> = OnceLock::new();
+
+fn init_xcpa_cmdblock() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8,
+    CK_ULONG,
+    CK_ULONG,
+    *mut XCPadmresp_T,
+    *mut u8,
+    *mut u8,
+    CK_ULONG
+) -> i32> {
+    XCPA_CMDBLOCK.get_or_init(|| {
+        let lib = init_lib();
+        unsafe { lib.get(b"xcpa_cmdblock\0").expect("Cannot load xcpa_cmdblock") }
+    })
+}
+
+static XCPA_INTERNAL_RV: OnceLock<Symbol<'static, unsafe extern "C" fn(
+    *mut u8,
+    CK_ULONG,
+    *mut XCPadmresp_T,
+    *mut CK_ULONG
+) -> i32>> = OnceLock::new();
+
+fn init_xcpa_internal_rv() -> &'static Symbol<'static, unsafe extern "C" fn(
+    *mut u8,
+    CK_ULONG,
+    *mut XCPadmresp_T,
+    *mut CK_ULONG
+) -> i32> {
+    XCPA_INTERNAL_RV.get_or_init(|| {
+        let lib = init_lib();
+        unsafe { lib.get(b"xcpa_internal_rv\0").expect("Cannot load xcpa_internal_rv") }
+    })
+}
+
+
 pub const MAX_BLOB_SIZE: usize = 9000;
 
 pub const XCP_OK: u32 = 0;
@@ -241,6 +337,44 @@ pub const XCP_KEYCSUM_BYTES: usize = 32;
 pub const XCP_ADMCTR_BYTES: usize = 16;
 pub const XCP_SERIALNR_CHARS: usize = 8;
 pub const MAX_FNAME_CHARS: usize = 256;
+pub type CK_ULONG = u64;
+pub type CK_VOID_PTR = *mut c_void;
+pub const CK_IBM_XCPQ_DOMAIN: u64= 3;
+pub const XCP_ADM_REENCRYPT: u64= 25;
+
+pub const CKR_FUNCTION_FAILED: u64 = 0x00000006;
+
+
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CK_IBM_DOMAIN_INFO {
+    pub domain: CK_ULONG,
+    pub wk: [u8; XCP_KEYCSUM_BYTES],
+    pub nextwk: [u8; XCP_KEYCSUM_BYTES],
+    pub flags: CK_ULONG,
+    pub mode: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct XCPadmresp_T {
+    pub fn_: u32,          // `fn` is a Rust keyword
+    pub domain: u32,
+    pub domainInst: u32,
+
+    pub module: [u8; XCP_SERIALNR_CHARS * 2],
+    pub modNr: [u8; XCP_SERIALNR_CHARS],
+    pub modInst: [u8; XCP_SERIALNR_CHARS],
+
+    pub tctr: [u8; XCP_ADMCTR_BYTES],
+
+    pub rv: CK_ULONG,      // CK_RV
+    pub reason: u32,
+
+    pub payload: *const u8,
+    pub pllen: CK_ULONG,      // size_t
+}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -978,6 +1112,123 @@ pub fn sign_single(
 
     sig.resize(sig_len as usize, 0);
     Ok(sig)
+}
+
+
+
+//************************************************************************************************
+//************************************************************************************************
+pub fn reencipher(target: u64, key: Vec<u8>) -> Result<Vec<u8>, String> {
+
+    // -----------------------------
+    // Get domain info
+    // -----------------------------
+    let mut domain_info: CK_IBM_DOMAIN_INFO = unsafe { std::mem::zeroed() };
+    let mut domain_info_len =
+        std::mem::size_of::<CK_IBM_DOMAIN_INFO>() as CK_ULONG;
+
+    let rc = unsafe {
+        init_get_xcp_info()(
+            &mut domain_info as *mut _ as CK_VOID_PTR,
+            &mut domain_info_len,
+            CK_IBM_XCPQ_DOMAIN,
+            0,
+            target,
+        )
+    };
+
+    if rc != CKR_OK {
+        return Err(to_error(rc));
+    }
+
+    // -----------------------------
+    // Prepare admin structures
+    // -----------------------------
+    let mut rb: XCPadmresp_T = unsafe { std::mem::zeroed() };
+    let mut lrb: XCPadmresp_T = unsafe { std::mem::zeroed() };
+
+    rb.domain  = domain_info.domain as u32;
+    lrb.domain = domain_info.domain as u32;
+
+    let mut req = vec![0u8; MAX_BLOB_SIZE];
+    let mut resp = vec![0u8; MAX_BLOB_SIZE];
+    let mut resp_len = resp.len() as CK_ULONG;
+
+    // -----------------------------
+    // Build request
+    // -----------------------------
+    let req_len = unsafe {
+        init_xcpa_cmdblock()(
+            req.as_mut_ptr(),
+            MAX_BLOB_SIZE as CK_ULONG,
+            XCP_ADM_REENCRYPT,
+            &mut rb,
+            std::ptr::null_mut(),
+            key.as_ptr() as *mut u8,
+            key.len() as CK_ULONG,
+        )
+    };
+
+    if req_len < 0 {
+        return Err(to_error(CKR_FUNCTION_FAILED));
+    }
+
+    // -----------------------------
+    // Call m_admin
+    // -----------------------------
+    let mut zero: CK_ULONG = 0;
+
+    let rc = unsafe {
+        init_m_admin()(
+            resp.as_mut_ptr(),
+            &mut resp_len,
+            std::ptr::null_mut(),
+            &mut zero,
+            req.as_mut_ptr(),
+            req_len as CK_ULONG,
+            std::ptr::null_mut(),
+            0,
+            target,
+        )
+    };
+
+    if rc != CKR_OK || resp_len == 0 {
+        return Err(to_error(rc));
+    }
+
+    // -----------------------------
+    // Parse response
+    // -----------------------------
+    let mut inner_rc: CK_ULONG = CKR_OK;
+
+    let rv = unsafe {
+        init_xcpa_internal_rv()(
+            resp.as_mut_ptr(),
+            resp_len,
+            &mut lrb,
+            &mut inner_rc,
+        )
+    };
+
+    if rv < 0 {
+        return Err(to_error(CKR_FUNCTION_FAILED));
+    }
+
+    if key.len() as CK_ULONG != lrb.pllen {
+        return Err(to_error(CKR_FUNCTION_FAILED));
+    }
+
+    // -----------------------------
+    // Extract new blob
+    // -----------------------------
+    let new_key = unsafe {
+        std::slice::from_raw_parts(
+            lrb.payload as *const u8,
+            lrb.pllen as usize,
+        ).to_vec()
+    };
+
+    Ok(new_key)
 }
 
 

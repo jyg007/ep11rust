@@ -1,4 +1,6 @@
 // PKCS#11 CKA_ attribute constants
+
+
 pub type CK_ATTRIBUTE_TYPE = CK_ULONG;
 //
 pub const CKA_CLASS: u64 = 0x00000000;
