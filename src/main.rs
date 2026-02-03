@@ -64,8 +64,17 @@ let (pk,sk) = match result {
        // There was an error 
        eprintln!("Error: {}", error); 
        return;
-   } 
-}; 
+   }
+};
+    let reenciphered = match reencipher(target,sk.clone()) {
+    Ok(blob) => blob,
+    Err(e) => {
+        eprintln!("Reencipher failed: {}", e);
+        return;
+    }
+    };
+
+    println!("Reenciphered Key: {}", hex::encode(&reenciphered));
 
 //************************************************************************************************
 //************************************************************************************************
@@ -102,15 +111,6 @@ let (pk,sk) = match result {
    } 
    };
 
-   let reenciphered = match reencipher(target, sk.clone()) {
-    Ok(blob) => blob,
-    Err(e) => {
-        eprintln!("Reencipher failed: {}", e);
-        return;
-    }
-    };
-
-    println!("Reenciphered Key: {}", hex::encode(&reenciphered));
 //************************************************************************************************
 //************************************************************************************************
 //************************************************************************************************
