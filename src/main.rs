@@ -345,5 +345,26 @@ let (new_key_bytes, checksum) =
 println!("Derived Key  = {}", hex::encode(&new_key_bytes));
 println!("Checksum     = {}", hex::encode(&checksum));
 
+   let pin = b"12345678";
+
+    match ep11_login(target, pin) {
+        Ok(enc_pinblob) => {
+            println!("EP11 login successful!");
+            println!("Encrypted pin blob ({} bytes):", enc_pinblob.len());
+            for byte in &enc_pinblob {
+                print!("{:02x}", byte);
+            }
+            println!();
+        }
+        Err(e) => {
+            eprintln!("EP11 login failed: {}", e);
+        }
+    }
+
+    match ep11_logout(pin, target) {
+        Ok(_) => println!("Logout successful"),
+        Err(e) => eprintln!("Logout failed: {}", e),
+    }
+
 } 
  

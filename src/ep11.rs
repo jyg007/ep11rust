@@ -1,4 +1,4 @@
-extern crate libc;
+
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int,  c_ulong};
 use std::ptr;
@@ -6,6 +6,24 @@ use std::time::SystemTime;
 use libloading::{Library, Symbol};
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::convert::TryInto;
+// AES
+use aes::Aes256;
+use cipher::{ BlockEncrypt,generic_array::GenericArray,KeyInit};
+
+// SHA-256
+use sha2::{Sha256, Digest};
+// Hex
+use hex;
+
+use openssl::error::ErrorStack;
+use openssl::pkey::{PKey, Private, Public};
+use openssl::derive::Deriver;
+use openssl::ec::EcKey;
+use openssl::ec::EcGroup;
+use openssl::nid::Nid;
+use openssl_sys::*;
+use byteorder::{BigEndian, ByteOrder};
 
 static LIB: OnceLock<Library> = OnceLock::new();
 
@@ -323,6 +341,31 @@ fn init_xcpa_internal_rv() -> &'static Symbol<'static, unsafe extern "C" fn(
     })
 }
 
+static M_LOGIN_EXTENDED: OnceLock<libloading::Symbol<'static, unsafe extern "C" fn(
+    *const u8, u64, *const u8, usize, *const u8, usize, *mut u8, *mut u64, u64
+) -> u64>> = OnceLock::new();
+
+fn init_m_login_extended() -> &'static libloading::Symbol<'static, unsafe extern "C" fn(
+    *const u8, u64, *const u8, usize, *const u8, usize, *mut u8, *mut u64, u64
+) -> u64> {
+    M_LOGIN_EXTENDED.get_or_init(|| {
+        let lib = init_lib();
+        unsafe { lib.get(b"m_LoginExtended\0").expect("Cannot load m_LoginExtended")}
+    })
+}
+
+static M_LOGOUT_EXTENDED: OnceLock<libloading::Symbol<'static, unsafe extern "C" fn(
+    *const u8, u64, *const u8, usize, *const u8, usize,  u64
+) -> u64>> = OnceLock::new();
+
+fn init_m_logout_extended() -> &'static libloading::Symbol<'static, unsafe extern "C" fn(
+    *const u8, u64, *const u8, usize, *const u8, usize,  u64
+) -> u64> {
+    M_LOGOUT_EXTENDED.get_or_init(|| {
+        let lib = init_lib();
+        unsafe { lib.get(b"m_LogoutExtended\0").expect("Cannot load m_LogoutExtended")}
+    })
+}
 
 pub const MAX_BLOB_SIZE: usize = 9000;
 
@@ -343,8 +386,31 @@ pub const CK_IBM_XCPQ_DOMAIN: u64= 3;
 pub const XCP_ADM_REENCRYPT: u64= 25;
 
 pub const CKR_FUNCTION_FAILED: u64 = 0x00000006;
+// --- Constants ---
+pub const XCP_WK_BYTES: usize = 32;
+pub const XCP_SESSION_TCTR_BYTES: usize = 16;
+pub const XCP_PINBLOB_V1_BYTES: usize = 56;
+pub const EP11_PINBLOB_MARKER_OFS: usize = 4;
+pub const EP11_PINBLOB_V1_MARKER: u8 = 0xab;
+pub const FNID_LOGINEXTENDED: u32 = 43;
+pub const FNID_LOGOUTEXTENDED: u32 = 44;
 
+pub const  XCP_CERTHASH_BYTES: usize = 32;
+pub const XCP_LOGIN_IMPR_MAX_SIZE: usize = 3 + (2 + XCP_CERTHASH_BYTES) + 3 + 158 + 2 + XCP_SESSION_TCTR_BYTES;
+pub const CK_IBM_XCPQ_LOGIN_IMPORTER:  u64 = 15; 
+pub const XCP_LOGIN_ALG_F2021: u64 = 2;
 
+const OID_IBM_MISC_EP11_SESSION_INFO: &[u8] = &[
+    0x06, 0x0c, 0x2b, 0x06, 0x01, 0x04, 0x01,
+    0x02, 0x82, 0x0b, 0x87, 0x67, 0x04, 0x01,
+];
+
+// --- Nonce structure ---
+#[repr(C)]
+pub struct Nonce {
+    slot_id: u32,
+    purpose: [u8; 12],
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1569,4 +1635,767 @@ pub fn verify_single(
     } else {
         Err(format!("m_VerifySingle failed: {:#X}", rc))
     }
+}
+
+
+
+//************************************************************************************************
+//************************************************************************************************
+fn ber_decode_sequence(input: &[u8]) -> Result<(&[u8], usize), String> {
+    if input.len() < 2 {
+        return Err("input too short".to_string());
+    }
+
+    if input[0] != 0x30 {
+        return Err("not a SEQUENCE".to_string());
+    }
+
+    let length: usize;
+    let header_len: usize;
+
+    if input[1] & 0x80 == 0 {
+        // short form
+        length = (input[1] & 0x7F) as usize;
+        header_len = 2;
+    } else {
+        // long form
+        let length_octets = (input[1] & 0x7F) as usize;
+        match length_octets {
+            1 => {
+                if input.len() < 3 {
+                    return Err("input too short for 1-length octet".to_string());
+                }
+                length = input[2] as usize;
+                header_len = 3;
+            }
+            2 => {
+                if input.len() < 4 {
+                    return Err("input too short for 2-length octets".to_string());
+                }
+                length = ((input[2] as usize) << 8) | (input[3] as usize);
+                header_len = 4;
+            }
+            3 => {
+                if input.len() < 5 {
+                    return Err("input too short for 3-length octets".to_string());
+                }
+                length = ((input[2] as usize) << 16) | ((input[3] as usize) << 8) | (input[4] as usize);
+                header_len = 5;
+            }
+            _ => return Err("length octets > 3 not supported".to_string()),
+        }
+    }
+
+    if header_len + length > input.len() {
+        return Err("sequence length mismatch".to_string());
+    }
+
+    let data = &input[header_len..header_len + length];
+    let field_len = header_len + length;
+
+    Ok((data, field_len))
+}
+
+fn ber_decode_octet_string(input: &[u8]) -> Result<(&[u8], usize), String> {
+    if input.len() < 2 {
+        return Err("input too short".to_string());
+    }
+
+    if input[0] != 0x04 {
+        return Err("not an OCTET STRING".to_string());
+    }
+
+    let length: usize;
+    let header_len: usize;
+
+    if input[1] & 0x80 == 0 {
+        // short form
+        length = (input[1] & 0x7F) as usize;
+        header_len = 2;
+    } else {
+        // long form
+        let length_octets = (input[1] & 0x7F) as usize;
+        match length_octets {
+            1 => {
+                if input.len() < 3 {
+                    return Err("input too short for 1-length octet".to_string());
+                }
+                length = input[2] as usize;
+                header_len = 3;
+            }
+            2 => {
+                if input.len() < 4 {
+                    return Err("input too short for 2-length octets".to_string());
+                }
+                length = ((input[2] as usize) << 8) | (input[3] as usize);
+                header_len = 4;
+            }
+            3 => {
+                if input.len() < 5 {
+                    return Err("input too short for 3-length octets".to_string());
+                }
+                length = ((input[2] as usize) << 16)
+                    | ((input[3] as usize) << 8)
+                    | (input[4] as usize);
+                header_len = 5;
+            }
+            _ => return Err("length octets > 3 not supported".to_string()),
+        }
+    }
+
+    if header_len + length > input.len() {
+        return Err("octet string length mismatch".to_string());
+    }
+
+    let data = &input[header_len..header_len + length];
+    let field_len = header_len + length;
+
+    Ok((data, field_len))
+}
+
+/// Encode a byte slice as a BER OCTET STRING
+fn ber_encode_octet_string(data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    out.push(0x04); // tag for OCTET STRING
+
+    // Encode length
+    if data.len() < 0x80 {
+        out.push(data.len() as u8);
+    } else if data.len() < 0x100 {
+        out.push(0x81);
+        out.push(data.len() as u8);
+    } else if data.len() < 0x10000 {
+        out.push(0x82);
+        out.push(((data.len() >> 8) & 0xFF) as u8);
+        out.push((data.len() & 0xFF) as u8);
+    } else {
+        return Err("Data too long for BER encoding".into());
+    }
+
+    out.extend_from_slice(data);
+    Ok(out)
+}
+
+/// Encode a byte slice as a BER SEQUENCE
+fn ber_encode_sequence(data: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    out.push(0x30); // tag for SEQUENCE
+
+    // Encode length
+    if data.len() < 0x80 {
+        out.push(data.len() as u8);
+    } else if data.len() < 0x100 {
+        out.push(0x81);
+        out.push(data.len() as u8);
+    } else if data.len() < 0x10000 {
+        out.push(0x82);
+        out.push(((data.len() >> 8) & 0xFF) as u8);
+        out.push((data.len() & 0xFF) as u8);
+    } else {
+        return Err("Data too long for BER encoding".into());
+    }
+
+    out.extend_from_slice(data);
+    Ok(out)
+}
+
+
+fn create_login_recipient(
+    ski: &[u8; XCP_CERTHASH_BYTES],
+    ec_privkey: &PKey<Private>,
+) -> Result<Vec<u8>, String> {
+    // 1. Serialize SPKI (public key info) in DER format
+    let spki = ec_privkey
+        .public_key_to_der()
+        .map_err(|e| format!("Failed to serialize SPKI: {:?}", e))?;
+
+    // 2. Version = 1 (v1)
+    let version = 1u32.to_be_bytes();
+
+    // 3. Encode each component as OCTET STRING
+    let v1_os = ber_encode_octet_string(&version)?;
+    let ski_os = ber_encode_octet_string(ski)?;
+    let spki_os = ber_encode_octet_string(&spki)?;
+
+    // 4. Concatenate all OCTET STRINGs
+    let mut data = Vec::new();
+    data.extend_from_slice(&v1_os);
+    data.extend_from_slice(&ski_os);
+    data.extend_from_slice(&spki_os);
+
+    // 5. Wrap in SEQUENCE
+    let recipient = ber_encode_sequence(&data)?;
+
+    Ok(recipient)
+}
+
+
+fn create_login_extended_info(
+    ski: &[u8; XCP_CERTHASH_BYTES],
+    ec_privkey: &PKey<Private>,
+) -> Result<Vec<u8>, String> {
+    
+    // Encode algorithm (big-endian u32)
+    // 1. Create a 4-byte array
+    let mut alg_bytes = [0u8; 4];
+
+    // 2. Encode algorithm as big-endian u32
+    let alg_value: u32 =  XCP_LOGIN_ALG_F2021 as u32; // replace with your enum/constant
+    BigEndian::write_u32(&mut alg_bytes, alg_value);
+
+    // Encode parent session ID (all zeros if none)
+    let parent_id = [0u8; XCP_WK_BYTES];
+    let parent_os = ber_encode_octet_string(&parent_id)?;
+
+    // 1. Create recipient info
+    let recipient = create_login_recipient(ski, ec_privkey)?;
+
+    // 4. Optional fields: attributes and context (empty)
+    let attr_bytes = &[];
+    let ctx_bytes = &[];
+
+    // 5. Encode all fields as OCTET STRINGs
+    let vers_os = ber_encode_octet_string(&OID_IBM_MISC_EP11_SESSION_INFO)?;
+    let alg_os = ber_encode_octet_string(&alg_bytes)?;
+    let recipient_os = ber_encode_octet_string(&recipient)?;
+    let attr_os = ber_encode_octet_string(attr_bytes)?;
+    let ctx_os = ber_encode_octet_string(ctx_bytes)?;
+
+    // 6. Concatenate all
+    let mut data = Vec::new();
+    data.extend_from_slice(&vers_os);
+    data.extend_from_slice(&alg_os);
+    data.extend_from_slice(&parent_os);
+    data.extend_from_slice(&recipient_os);
+    data.extend_from_slice(&attr_os);
+    data.extend_from_slice(&ctx_os);
+
+    // 7. Wrap in SEQUENCE
+    let extended_info = ber_encode_sequence(&data)?;
+
+    Ok(extended_info)
+}
+
+
+fn get_login_importer_key(
+    target: u64,
+) -> Result<([u8; 32], [u8; XCP_ADMCTR_BYTES], PKey<openssl::pkey::Public>), String> {
+
+    let mut res = vec![0u8; XCP_LOGIN_IMPR_MAX_SIZE];
+    let mut res_len : u64 = res.len() as CK_ULONG;
+
+    let rc = unsafe {
+        init_get_xcp_info()(
+            res.as_mut_ptr() as *mut std::ffi::c_void,
+            &mut res_len,
+            CK_IBM_XCPQ_LOGIN_IMPORTER,
+            XCP_LOGIN_ALG_F2021,
+            target
+        )
+    };
+
+    if rc != CKR_OK {
+        return Err(format!("m_get_xcp_info failed: 0x{:x}", rc));
+    }
+    let res = &res[..res_len as usize];
+
+    /*
+     * xcpRsp ::= SEQUENCE
+     *   SKI OCTET STRING
+     *   SPKI OCTET STRING
+     *   tcounter OCTET STRING
+     */
+
+    // ---- SEQUENCE ----
+    let (mut data, _) =
+        ber_decode_sequence(res).map_err(|e| format!("ber_decode_sequence: {}", e))?;
+
+    // ---- SKI ----
+    let (ski_bytes, field_len) =
+        ber_decode_octet_string(data).map_err(|e| format!("SKI decode: {}", e))?;
+
+    if ski_bytes.len() != XCP_CERTHASH_BYTES {
+        return Err(format!(
+            "SKI length mismatch {} != {}",
+            ski_bytes.len(),
+            XCP_CERTHASH_BYTES
+        ));
+    }
+
+    let ski: [u8; XCP_CERTHASH_BYTES] = ski_bytes
+        .try_into()
+        .map_err(|_| format!("SKI length mismatch {}", ski_bytes.len()))?;
+
+    data = &data[field_len..];
+
+    // ---- SPKI ----
+    let (spki_bytes, field_len) =
+        ber_decode_octet_string(data).map_err(|e| format!("SPKI decode: {}", e))?;
+
+    data = &data[field_len..];
+
+    // ---- TCOUNTER ----
+    let (cnt_bytes, _) =
+        ber_decode_octet_string(data).map_err(|e| format!("COUNTER decode: {}", e))?;
+
+    if cnt_bytes.len() > XCP_ADMCTR_BYTES {
+        return Err("tcounter too large".into());
+    }
+
+    // left-pad like C memset + memcpy
+    let mut tcounter = [0u8; XCP_ADMCTR_BYTES];
+    let offset = XCP_ADMCTR_BYTES - cnt_bytes.len();
+    tcounter[offset..].copy_from_slice(cnt_bytes);
+
+
+    // ----- Parse SPKI into EVP_PKEY -----
+    let ec_pubkey = PKey::public_key_from_der(spki_bytes)
+        .map_err(|e: ErrorStack| format!("d2i_PUBKEY failed: {:?}", e))?;
+
+    Ok((ski, tcounter, ec_pubkey))
+}
+
+
+
+// --- Increment TCounter (big-endian) ---
+fn increment_tcounter(tcounter: &mut [u8]) {
+    for i in (0..tcounter.len()).rev() {
+        tcounter[i] = tcounter[i].wrapping_add(1);
+        if tcounter[i] != 0 { break; }
+    }
+}
+
+// --- SHA-256 based PIN blob key derivation ---
+fn derive_pinblob_key(pinblob: &[u8], pin: &[u8]) -> Result<Vec<u8>, String> {
+    if pinblob.len() != 48 { return Err("pinblob length invalid".into()); }
+    let mut hasher = Sha256::new();
+    hasher.update(&1u32.to_be_bytes());
+    hasher.update(&3u32.to_be_bytes());
+    hasher.update(pin);
+    hasher.update(&[0u8]);
+    hasher.update(&pinblob[XCP_WK_BYTES..XCP_WK_BYTES+16]);
+    Ok(hasher.finalize().to_vec())
+}
+
+/// Create padded PIN in BER format
+fn create_padded_pin(pin: &[u8], tcounter: &[u8], func_id: u32) -> Result<Vec<u8>, String> {
+    // 1. Encode each field as OCTET STRING
+    let version_os = ber_encode_octet_string(&1u32.to_be_bytes())?;
+    let func_id_os = ber_encode_octet_string(&func_id.to_be_bytes())?;
+    let tcounter_os = ber_encode_octet_string(tcounter)?;
+    let pin_os = ber_encode_octet_string(pin)?;
+
+    // 2. Concatenate all fields
+    let mut data = Vec::new();
+    data.extend_from_slice(&version_os);
+    data.extend_from_slice(&func_id_os);
+    data.extend_from_slice(&tcounter_os);
+    data.extend_from_slice(&pin_os);
+
+    // 3. Wrap concatenated data in a SEQUENCE
+    let seq = ber_encode_sequence(&data)?;
+
+    Ok(seq)
+}
+
+
+// Derive ECDH shared secret
+pub fn ecdh_derive(
+    privkey: &PKey<Private>,
+    pubkey: &PKey<Public>,
+) -> Result<Vec<u8>, String> {
+    // Create a deriver
+    let mut deriver = Deriver::new(privkey)
+        .map_err(|e| format!("Deriver::new failed: {:?}", e))?;
+
+    // Set peer public key
+    deriver
+        .set_peer(pubkey)
+        .map_err(|e| format!("set_peer failed: {:?}", e))?;
+
+    // Derive shared secret
+    let secret = deriver
+        .derive_to_vec()
+        .map_err(|e| format!("derive_to_vec failed: {:?}", e))?;
+
+    Ok(secret)
+}
+
+/// AES 256-bit key size
+const AES_KEY_SIZE_256: usize = 32;
+
+fn ec_x_from_pkey(privkey: &PKey<Private>) -> Result<Vec<u8>, String> {
+    unsafe {
+        // 1. Trait-less extraction of the internal EVP_PKEY pointer
+        let pkey_ptr = *(privkey as *const _ as *const *mut EVP_PKEY);
+
+        // 2. Get the EC_KEY handle
+        let ec_key = EVP_PKEY_get1_EC_KEY(pkey_ptr);
+        if ec_key.is_null() {
+            return Err("Not an EC key".into());
+        }
+
+        let group = EC_KEY_get0_group(ec_key);
+        let pub_point = EC_KEY_get0_public_key(ec_key);
+        let degree = EC_GROUP_get_degree(group);
+        let prime_len = (degree + 7) / 8;
+
+        // 3. Extract the X coordinate as a BIGNUM
+        let bn_x = BN_new();
+        if bn_x.is_null() {
+            EC_KEY_free(ec_key);
+            return Err("BN_new failed".into());
+        }
+
+        // We pass null for Y since we only need X
+        if EC_POINT_get_affine_coordinates_GFp(group, pub_point, bn_x, std::ptr::null_mut(), std::ptr::null_mut()) != 1 {
+            BN_free(bn_x);
+            EC_KEY_free(ec_key);
+            return Err("Failed to get affine coordinates".into());
+        }
+
+        // 4. Convert BIGNUM to padded byte vector
+        let mut x_coord = vec![0u8; prime_len as usize];
+        if BN_bn2binpad(bn_x, x_coord.as_mut_ptr(), prime_len as i32) != prime_len as i32 {
+            BN_free(bn_x);
+            EC_KEY_free(ec_key);
+            return Err("BN_bn2binpad failed".into());
+        }
+
+        // 5. Cleanup
+        BN_free(bn_x);
+        EC_KEY_free(ec_key);
+
+        Ok(x_coord)
+    }
+}
+
+
+/// SP800-56C KDF SHA-256
+pub fn kdf_sp800_56c_sha256(
+    ec_privkey: &PKey<openssl::pkey::Private>,
+    secret: &[u8],
+) -> Result<[u8; AES_KEY_SIZE_256], String> {
+    let x_bytes = ec_x_from_pkey(ec_privkey)?;
+
+    let mut hasher = Sha256::new();
+
+    // Big-endian 32-bit value 1
+    let be32_1 = 1u32.to_be_bytes();
+
+    // SHA256( BE32(1) || BE32(1) || secret || x_bytes )
+    hasher.update(&be32_1);
+    hasher.update(&be32_1);
+    hasher.update(secret);
+    hasher.update(&x_bytes);
+
+    let hash = hasher.finalize();
+
+
+    if hash.len() != AES_KEY_SIZE_256 {
+        return Err(format!("Unexpected SHA256 output length: {}", hash.len()));
+    }
+
+    let mut key = [0u8; AES_KEY_SIZE_256];
+    key.copy_from_slice(&hash);
+    Ok(key)
+}
+
+// Generate an EC P-521 session key
+fn generate_ec_session_key_p521() -> Result<PKey<openssl::pkey::Private>, String> {
+    // Create EC group for P-521
+    let group = EcGroup::from_curve_name(Nid::SECP521R1)
+        .map_err(|e| format!("Failed to create EC group: {:?}", e))?;
+
+    // Generate EC private key
+    let ec_key = EcKey::generate(&group)
+        .map_err(|e| format!("Failed to generate EC key: {:?}", e))?;
+
+    // Wrap EC key in PKey<Private>
+    let pkey = PKey::from_ec_key(ec_key)
+        .map_err(|e| format!("Failed to wrap EC key: {:?}", e))?;
+
+    Ok(pkey)
+}
+
+
+/// Rust port of your Go aes256KWPEncrypt (RFC5649)
+pub fn aes_256_kwp_encrypt2( plaintext: &[u8],key: &[u8]) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err("AES-256 key must be 32 bytes".into());
+    }
+
+    let cipher = Aes256::new(GenericArray::from_slice(key));
+
+    let n = plaintext.len();
+
+    // RFC5649 zero padding to multiple of 8
+    let mut pad_len = 8 - (n % 8);
+    if pad_len == 8 {
+        pad_len = 0;
+    }
+
+    let mut padded = vec![0u8; n + pad_len];
+    padded[..n].copy_from_slice(plaintext);
+
+    // AIV = A65959A6 + 32-bit big endian length
+    let mut a = vec![0xA6, 0x59, 0x59, 0xA6, 0, 0, 0, n as u8];
+
+    let rcount = padded.len() / 8;
+
+    let mut r: Vec<[u8; 8]> = padded
+        .chunks_exact(8)
+        .map(|c| {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(c);
+            b
+        })
+        .collect();
+
+    // 6 * n rounds
+    for j in 0..6 {
+        for i in 0..rcount {
+            let mut b = [0u8; 16];
+            b[..8].copy_from_slice(&a);
+            b[8..].copy_from_slice(&r[i]);
+
+            cipher.encrypt_block(GenericArray::from_mut_slice(&mut b));
+
+            let t = (rcount * j + i + 1) as u64;
+
+            for k in 0..8 {
+                a[k] = b[k] ^ ((t >> (56 - 8 * k)) as u8);
+            }
+
+            r[i].copy_from_slice(&b[8..]);
+        }
+    }
+
+    // Output A || R[0] || R[1]...
+    let mut out = Vec::with_capacity(8 + rcount * 8);
+    out.extend_from_slice(&a);
+
+    for block in r {
+        out.extend_from_slice(&block);
+    }
+
+    Ok(out)
+}
+
+/// AES-256 Key Wrap with Padding (RFC 5649) using OpenSSL FFI
+pub fn aes_256_kwp_encrypt(plaintext: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
+    if key.len() != 32 {
+        return Err("AES key must be 32 bytes".into());
+    }
+
+    unsafe {
+        let ctx = EVP_CIPHER_CTX_new();
+        if ctx.is_null() {
+            return Err("EVP_CIPHER_CTX_new failed".into());
+        }
+
+        EVP_CIPHER_CTX_set_flags(ctx, EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
+
+        let cipher = EVP_aes_256_wrap_pad();
+        if cipher.is_null() {
+            EVP_CIPHER_CTX_free(ctx);
+            return Err("EVP_aes_256_wrap_pad not available".into());
+        }
+
+        if EVP_EncryptInit_ex(ctx, cipher, std::ptr::null_mut(), key.as_ptr(), std::ptr::null()) != 1 {
+            EVP_CIPHER_CTX_free(ctx);
+            return Err("EVP_EncryptInit_ex failed".into());
+        }
+
+        fn encrypt_len(n: usize) -> usize {
+            let mut l = n;
+            if n % 8 != 0 {
+                l += 8 - (n % 8);
+            }
+            l + 8
+        }
+
+        let total_len = encrypt_len(plaintext.len());
+        let mut out = vec![0u8; total_len];
+
+        let mut outlen: c_int = total_len as c_int;
+
+        if EVP_EncryptUpdate(
+            ctx,
+            out.as_mut_ptr(),
+            &mut outlen,
+            plaintext.as_ptr(),
+            plaintext.len() as c_int,
+        ) != 1 {
+            EVP_CIPHER_CTX_free(ctx);
+            return Err("EVP_EncryptUpdate failed".into());
+        }
+
+        let mut outlen2: c_int = (total_len as c_int) - outlen;
+
+        if EVP_EncryptFinal_ex(
+            ctx,
+            out.as_mut_ptr().add(outlen as usize),
+            &mut outlen2,
+        ) != 1 {
+            EVP_CIPHER_CTX_free(ctx);
+            return Err("EVP_EncryptFinal_ex failed".into());
+        }
+
+        let final_len = (outlen + outlen2) as usize;
+        out.truncate(final_len);
+
+        EVP_CIPHER_CTX_free(ctx);
+        Ok(out)
+    }
+}
+
+pub fn aes_256_kwp_decrypt( ciphertext: &[u8],key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    unsafe {
+        let  ctx = EVP_CIPHER_CTX_new();
+        if ctx.is_null() {
+            return Err("EVP_CIPHER_CTX_new failed".into());
+        }
+
+        let cipher = EVP_aes_256_wrap_pad();
+        if cipher.is_null() {
+            return Err("EVP_aes_256_wrap_pad not available in OpenSSL".into());
+        }
+
+        if EVP_DecryptInit_ex(ctx, cipher, ptr::null_mut(), key.as_ptr(), ptr::null()) != 1 {
+            EVP_CIPHER_CTX_free(ctx);
+            return Err("EVP_DecryptInit_ex failed".into());
+        }
+
+        let mut out = vec![0u8; ciphertext.len()];
+        let mut outlen: c_int = 0;
+
+        if EVP_DecryptUpdate(
+            ctx,
+            out.as_mut_ptr(),
+            &mut outlen,
+            ciphertext.as_ptr(),
+            ciphertext.len() as c_int,
+        ) != 1
+        {
+            EVP_CIPHER_CTX_free(ctx);
+            return Err("EVP_DecryptUpdate failed".into());
+        }
+
+        let mut outlen2: c_int = 0;
+        if EVP_DecryptFinal_ex(ctx, out.as_mut_ptr().add(outlen as usize), &mut outlen2) != 1 {
+            EVP_CIPHER_CTX_free(ctx);
+            return Err("EVP_DecryptFinal_ex failed".into());
+        }
+
+        outlen += outlen2;
+        out.truncate(outlen as usize);
+
+        EVP_CIPHER_CTX_free(ctx);
+        Ok(out)
+    }
+}
+
+
+// --- Main doLoginExtended equivalent ---
+fn do_login_extended(target: u64, pin: &[u8], fnid: u32) -> Result<Vec<u8>, String> {
+        let mut nonce = Nonce { slot_id: 4, purpose: [0u8; 12] };
+        nonce.purpose[..12].copy_from_slice(b"FIPS-session");
+        let nonce_ptr = &nonce as *const Nonce as *const u8;
+        let nonce_len = std::mem::size_of::<Nonce>();
+
+        let local_priv = generate_ec_session_key_p521()?;
+
+        let (peer_ski, mut tcounter, peer_pub) = get_login_importer_key(target)
+            .map_err(|e| format!("Failed to get login importer key: {}", e))?;
+
+      // 3. ECDH shared secret derivation
+        let shared_secret = ecdh_derive(&local_priv, &peer_pub)?;
+        // 4. KDF SP800-56c → AES-256 key
+        let shared_key: [u8; 32]= kdf_sp800_56c_sha256(&local_priv, &shared_secret)?
+                    .try_into()
+                    .map_err(|_| "KDF output is not 32 bytes")?;
+
+      // 5. Optional: create extended info
+        let extended_info = create_login_extended_info(&peer_ski, &local_priv)?;
+
+        // 6. Increment TCounter
+        increment_tcounter(&mut tcounter);
+
+        // 7. Create padded PIN
+        let padded_pin = create_padded_pin(pin, &tcounter,fnid )?;
+
+        // 8. AES-KWP encrypt padded PIN
+        let enc_padded_pin = aes_256_kwp_encrypt(&padded_pin, &shared_key)?;
+
+        // 9. Call HSM function (stub here, replace with actual m_LoginExtended)
+        let mut enc_pinblob = vec![0u8; XCP_PINBLOB_V1_BYTES]; // allocate output buffer
+        let mut enc_pinblob_len = enc_pinblob.len() as u64;
+
+match fnid {
+    FNID_LOGINEXTENDED => {
+        let rc = unsafe {
+            init_m_login_extended()(
+                enc_padded_pin.as_ptr(),
+                enc_padded_pin.len().try_into().unwrap(),
+                nonce_ptr,
+                nonce_len,
+                extended_info.as_ptr(),
+                extended_info.len(),
+                enc_pinblob.as_mut_ptr(),
+                &mut enc_pinblob_len as *mut u64,
+                target,
+            )
+        };
+    
+        if rc != CKR_OK {
+            return Err(format!("HSM LoginExtended failed: 0x{:X}", rc));
+        }
+
+     }
+    FNID_LOGOUTEXTENDED => {
+        let rc = unsafe {
+            init_m_logout_extended()(
+                enc_padded_pin.as_ptr(),
+                enc_padded_pin.len().try_into().unwrap(),
+                nonce_ptr,
+                nonce_len,
+                extended_info.as_ptr(),
+                extended_info.len(),
+                target,
+            )
+        };
+    
+        if rc != CKR_OK {
+            return Err(format!("HSM LoginExtended failed: 0x{:X}", rc));
+        }
+        return Ok(vec![])
+     }
+     _ => {
+        return Err(format!("Unsupported FNID: {}", fnid));
+    }
+}
+
+        enc_pinblob.truncate(enc_pinblob_len as usize);
+
+        let clear_pinblob = aes_256_kwp_decrypt(&enc_pinblob, &shared_key).map_err(|e| format!("Failed to decrypt pin blob: {}", e))?;
+  
+        // 10. Derive PIN blob key
+        let pinblob_key = derive_pinblob_key(&clear_pinblob, pin)?;
+
+        // 11. Encrypt pinblob (wrap first 32 bytes)
+        let enc_pinblob = aes_256_kwp_encrypt(&clear_pinblob, &pinblob_key)?;
+
+    Ok(enc_pinblob)
+}
+
+// --- EP11Login wrapper ---
+pub fn ep11_login(target: u64, pin: &[u8]) -> Result<Vec<u8>, String> {
+    do_login_extended(target, pin, FNID_LOGINEXTENDED)
+}
+
+// Perform an EP11 logout using the extended login function
+pub fn ep11_logout(pin: &[u8], target: u64) -> Result<(), String> {
+    // Call do_login_extended with the logout function ID
+    do_login_extended(target, pin, FNID_LOGOUTEXTENDED).map(|_| ())
 }
